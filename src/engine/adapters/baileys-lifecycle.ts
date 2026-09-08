@@ -77,6 +77,8 @@ export interface BaileysLifecycleHost {
   upsertContacts: BaileysSessionStore['upsertContacts'];
   /** Persist chat records pushed by the socket (chats.upsert/update, messaging-history.set). */
   upsertChats: BaileysSessionStore['upsertChats'];
+  /** Remove chats WhatsApp deleted from the account's chat list. */
+  deleteChats: BaileysSessionStore['deleteChats'];
   /** Learn lid<->phone mappings pushed by the socket (messaging-history.set, lid-mapping.update). */
   addLidMappings: BaileysSessionStore['addLidMappings'];
   handleMessagesUpsert: BaileysEvents['handleMessagesUpsert'];
@@ -241,6 +243,7 @@ export class BaileysLifecycle {
         previous.ev.removeAllListeners('contacts.update');
         previous.ev.removeAllListeners('chats.upsert');
         previous.ev.removeAllListeners('chats.update');
+        previous.ev.removeAllListeners('chats.delete');
         previous.ev.removeAllListeners('messaging-history.set');
         previous.ev.removeAllListeners('lid-mapping.update');
         previous.ev.removeAllListeners('group-participants.update');
@@ -330,6 +333,7 @@ export class BaileysLifecycle {
       });
       this.host.upsertChats(updates);
     });
+    sock.ev.on('chats.delete', ids => this.host.deleteChats(ids));
     sock.ev.on('group-participants.update', event => this.host.handleGroupParticipantsUpdate(event));
     sock.ev.on('groups.update', updates => this.host.handleGroupsUpdate(updates));
     sock.ev.on('group.join-request', event => this.host.handleGroupJoinRequest(event));

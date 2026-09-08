@@ -58,6 +58,10 @@ class LruMap<K, V> {
   values(): IterableIterator<V> {
     return this.map.values();
   }
+
+  delete(key: K): void {
+    this.map.delete(key);
+  }
 }
 
 /**
@@ -143,6 +147,18 @@ export class BaileysSessionStore {
       const existing = this.chats.get(r.id) ?? { id: r.id };
       this.chats.set(r.id, { ...existing, ...r });
       this.persistChatState(r.id, r);
+    }
+  }
+
+  /** Remove chats WhatsApp explicitly deleted; upserts alone would leave them in the dashboard forever. */
+  deleteChats(ids: string[] = []): void {
+    for (const id of ids) {
+      const keys = new Set([id, this.toEngineJid(id), this.toNeutralJid(id)]);
+      for (const key of keys) {
+        this.chats.delete(key);
+        this.lastMessages.delete(key);
+        this.ephemeralByChat.delete(key);
+      }
     }
   }
 

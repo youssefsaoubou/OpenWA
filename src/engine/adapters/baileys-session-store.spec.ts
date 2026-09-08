@@ -217,6 +217,20 @@ describe('BaileysSessionStore', () => {
     });
   });
 
+  it('removes chats deleted by WhatsApp, including their cached message state', () => {
+    store.upsertChats([{ id: '628111@s.whatsapp.net', name: 'Alice' }]);
+    store.recordMessage({
+      key: { remoteJid: '628111@s.whatsapp.net', fromMe: false, id: 'MESSAGE' },
+      message: { conversation: 'hello' },
+      messageTimestamp: 100,
+    });
+
+    store.deleteChats(['628111@c.us']);
+
+    expect(store.listChats()).toEqual([]);
+    expect(store.lastMessage('628111@c.us')).toBeNull();
+  });
+
   it('does not overwrite a newer last-message with an older one', () => {
     store.recordMessage({
       key: { remoteJid: 'c@s.whatsapp.net', id: 'NEW' },
