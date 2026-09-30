@@ -36,19 +36,10 @@ const emptyForm: TemplateForm = {
 };
 
 function extractPlaceholders(template: TemplateForm | MessageTemplate) {
-  const source = [
-    template.header,
-    template.body,
-    template.footer,
-    'mediaUrl' in template ? template.mediaUrl : null,
-  ]
+  const source = [template.header, template.body, template.footer, 'mediaUrl' in template ? template.mediaUrl : null]
     .filter(Boolean)
     .join('\n');
-  return Array.from(
-    new Set(
-      Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1]),
-    ),
-  ).sort();
+  return Array.from(new Set(Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1]))).sort();
 }
 
 function toPayload(form: TemplateForm): TemplatePayload {
@@ -390,9 +381,7 @@ export function Templates() {
                 <select
                   id="tpl-type"
                   value={form.type}
-                  onChange={event =>
-                    setForm({ ...form, type: event.target.value as 'text' | 'image' })
-                  }
+                  onChange={event => setForm({ ...form, type: event.target.value as 'text' | 'image' })}
                   disabled={!canWrite}
                 >
                   <option value="text">{t('chats.messageType.text')}</option>
