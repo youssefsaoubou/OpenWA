@@ -36,8 +36,17 @@ const emptyForm: TemplateForm = {
 };
 
 function extractPlaceholders(template: TemplateForm | MessageTemplate) {
-  const source = [template.header, template.body, template.footer, 'mediaUrl' in template ? template.mediaUrl : null].filter(Boolean).join('\n');
-  return Array.from(new Set(Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1]))).sort();
+  const source = [
+    template.header,
+    template.body,
+    template.footer,
+    'mediaUrl' in template ? template.mediaUrl : null,
+  ]
+    .filter(Boolean)
+    .join('\n');
+  return Array.from(
+    new Set(Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1])),
+  ).sort();
 }
 
 function toPayload(form: TemplateForm): TemplatePayload {
