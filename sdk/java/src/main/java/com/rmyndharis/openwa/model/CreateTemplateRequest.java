@@ -1,7 +1,7 @@
 package com.rmyndharis.openwa.model;
 
 /** Request body for creating a template. Optional fields are omitted from the payload when {@code null}. */
-public record CreateTemplateRequest(String name, String body, String header, String footer, String type, String mediaUrl) {
+public record CreateTemplateRequest(String name, String body, String header, String footer, TemplateType type, String mediaUrl) {
     public static Builder builder() {
         return new Builder();
     }
@@ -11,7 +11,7 @@ public record CreateTemplateRequest(String name, String body, String header, Str
         private String body;
         private String header;
         private String footer;
-        private String type;
+        private TemplateType type;
         private String mediaUrl;
 
         /** Unique template name within the session. */
@@ -36,7 +36,7 @@ public record CreateTemplateRequest(String name, String body, String header, Str
             return this;
         }
 
-        public Builder type(String v) {
+        public Builder type(TemplateType v) {
             this.type = v;
             return this;
         }
