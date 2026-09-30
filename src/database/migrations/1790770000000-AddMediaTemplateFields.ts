@@ -1,4 +1,4 @@
-import { MigrationInterface, QueryRunner } from 'typeorm';
+import { MigrationInterface, QueryRunner, TableColumn } from 'typeorm';
 
 export class AddMediaTemplateFields1790770000000 implements MigrationInterface {
   name = 'AddMediaTemplateFields1790770000000';
@@ -6,7 +6,7 @@ export class AddMediaTemplateFields1790770000000 implements MigrationInterface {
   async up(queryRunner: QueryRunner): Promise<void> {
     await queryRunner.addColumn(
       'templates',
-      new (await import('typeorm')).TableColumn({
+      new TableColumn({
         name: 'type',
         type: 'varchar',
         length: '20',
@@ -16,7 +16,7 @@ export class AddMediaTemplateFields1790770000000 implements MigrationInterface {
     );
     await queryRunner.addColumn(
       'templates',
-      new (await import('typeorm')).TableColumn({
+      new TableColumn({
         name: 'mediaUrl',
         type: 'text',
         isNullable: true,
