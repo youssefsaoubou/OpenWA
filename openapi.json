@@ -19934,12 +19934,11 @@
               "text",
               "image"
             ],
-            "default": "text"
+            "description": "Template message type"
           },
           "mediaUrl": {
             "type": "string",
             "description": "Image URL for image templates. Supports {{variable}} placeholders.",
-            "example": "{{imageUrl}}",
             "maxLength": 4096
           }
         },
@@ -19971,14 +19970,6 @@
             "type": "string",
             "nullable": true
           },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "updatedAt": {
-            "format": "date-time",
-            "type": "string"
-          },
           "type": {
             "type": "string",
             "enum": [
@@ -19989,6 +19980,14 @@
           "mediaUrl": {
             "type": "string",
             "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
           }
         },
         "required": [
@@ -19996,6 +19995,7 @@
           "sessionId",
           "name",
           "body",
+          "type",
           "createdAt",
           "updatedAt"
         ]
@@ -20029,12 +20029,11 @@
               "text",
               "image"
             ],
-            "default": "text"
+            "description": "Template message type"
           },
           "mediaUrl": {
             "type": "string",
             "description": "Image URL for image templates. Supports {{variable}} placeholders.",
-            "example": "{{imageUrl}}",
             "maxLength": 4096
           }
         }
