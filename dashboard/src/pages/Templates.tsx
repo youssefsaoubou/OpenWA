@@ -45,7 +45,9 @@ function extractPlaceholders(template: TemplateForm | MessageTemplate) {
     .filter(Boolean)
     .join('\n');
   return Array.from(
-    new Set(Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1])),
+    new Set(
+      Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1]),
+    ),
   ).sort();
 }
 
