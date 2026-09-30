@@ -17,7 +17,7 @@
     "CREATE UNIQUE INDEX \"IDX_templates_session_name\" ON \"templates\" (\"sessionId\", \"name\") ",
     "CREATE INDEX \"IDX_templates_sessionId\" ON \"templates\" (\"sessionId\") ",
     "DROP INDEX \"IDX_automation_rules_sessionId\"",
-    "CREATE TABLE \"temporary_automation_rules\" (\"id\" varchar PRIMARY KEY NOT NULL, \"sessionId\" varchar NOT NULL, \"name\" varchar(100) NOT NULL, \"enabled\" boolean NOT NULL DEFAULT (1), \"conditions\" text, \"replyText\" text NOT NULL, \"cooldownSeconds\" integer NOT NULL DEFAULT (60), \"createdAt\" datetime NOT NULL DEFAULT (datetime('now')), \"updatedAt\" datetime NOT NULL DEFAULT (datetime('now')), \"type\" varchar(20) NOT NULL DEFAULT ('text'), \"mediaUrl\" text)",
+    "CREATE TABLE \"temporary_automation_rules\" (\"id\" varchar PRIMARY KEY NOT NULL, \"sessionId\" varchar NOT NULL, \"name\" varchar(100) NOT NULL, \"enabled\" boolean NOT NULL DEFAULT (1), \"conditions\" text, \"replyText\" text NOT NULL, \"cooldownSeconds\" integer NOT NULL DEFAULT (60), \"createdAt\" datetime NOT NULL DEFAULT (datetime('now')), \"updatedAt\" datetime NOT NULL DEFAULT (datetime('now')))",
     "INSERT INTO \"temporary_automation_rules\"(\"id\", \"sessionId\", \"name\", \"enabled\", \"conditions\", \"replyText\", \"cooldownSeconds\", \"createdAt\", \"updatedAt\") SELECT \"id\", \"sessionId\", \"name\", \"enabled\", \"conditions\", \"replyText\", \"cooldownSeconds\", \"createdAt\", \"updatedAt\" FROM \"automation_rules\"",
     "DROP TABLE \"automation_rules\"",
     "ALTER TABLE \"temporary_automation_rules\" RENAME TO \"automation_rules\"",
