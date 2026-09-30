@@ -82,17 +82,17 @@ export class UpdateTemplateDto {
   @MaxLength(BODY_MAX_LENGTH)
   body?: string;
 
-  @ApiPropertyOptional({ description: 'Optional header text', maxLength: HEADER_FOOTER_MAX_LENGTH })
+  @ApiPropertyOptional({ description: 'Optional header text', maxLength: HEADER_FOOTER_MAX_LENGTH, nullable: true })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
-  header?: string;
+  header?: string | null;
 
-  @ApiPropertyOptional({ description: 'Optional footer text', maxLength: HEADER_FOOTER_MAX_LENGTH })
+  @ApiPropertyOptional({ description: 'Optional footer text', maxLength: HEADER_FOOTER_MAX_LENGTH, nullable: true })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
-  footer?: string;
+  footer?: string | null;
 
   @ApiPropertyOptional({ description: 'Template message type', enum: TEMPLATE_TYPES })
   @ValidateIf((o: UpdateTemplateDto) => o.type !== undefined)
@@ -108,7 +108,7 @@ export class UpdateTemplateDto {
   @IsString()
   @IsNotEmpty()
   @MaxLength(MEDIA_URL_MAX_LENGTH)
-  mediaUrl?: string;
+  mediaUrl?: string | null;
 }
 
 export class TemplateResponseDto {
