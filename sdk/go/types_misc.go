@@ -52,6 +52,8 @@ type CreateTemplateRequest struct {
 	Body   string `json:"body"`
 	Header string `json:"header,omitempty"`
 	Footer string `json:"footer,omitempty"`
+	Type string `json:"type,omitempty"`
+	MediaURL string `json:"mediaUrl,omitempty"`
 }
 
 // UpdateTemplateRequest updates a template; all fields optional.
