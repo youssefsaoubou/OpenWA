@@ -82,13 +82,23 @@ export class UpdateTemplateDto {
   @MaxLength(BODY_MAX_LENGTH)
   body?: string;
 
-  @ApiPropertyOptional({ type: String, description: 'Optional header text', maxLength: HEADER_FOOTER_MAX_LENGTH, nullable: true })
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Optional header text',
+    maxLength: HEADER_FOOTER_MAX_LENGTH,
+    nullable: true,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
   header?: string | null;
 
-  @ApiPropertyOptional({ type: String, description: 'Optional footer text', maxLength: HEADER_FOOTER_MAX_LENGTH, nullable: true })
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Optional footer text',
+    maxLength: HEADER_FOOTER_MAX_LENGTH,
+    nullable: true,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
