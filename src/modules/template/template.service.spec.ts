@@ -182,7 +182,11 @@ describe('TemplateService', () => {
     });
 
     it('should clear nullable fields when null is provided', async () => {
-      const template = createMockTemplate({ header: 'Old header', footer: 'Old footer', mediaUrl: 'https://example.com/old.jpg' });
+      const template = createMockTemplate({
+        header: 'Old header',
+        footer: 'Old footer',
+        mediaUrl: 'https://example.com/old.jpg',
+      });
       (repository.findOne as jest.Mock).mockResolvedValue(template);
 
       await service.update('sess-1', 'tpl-uuid-1', { header: null, footer: null, mediaUrl: null });
