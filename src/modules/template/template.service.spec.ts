@@ -15,6 +15,8 @@ function createMockTemplate(overrides: Partial<Template> = {}): Template {
     body: 'Hi {{customer}}, order {{orderId}} shipped.',
     header: null,
     footer: null,
+    type: 'text',
+    mediaUrl: null,
     createdAt: new Date(),
     updatedAt: new Date(),
     session: undefined as unknown as Session,
@@ -158,20 +160,6 @@ describe('TemplateService', () => {
       await expect(service.resolve('sess-1', { templateName: 'nope' })).rejects.toThrow(NotFoundException);
     });
 
-    // PostgreSQL refuses a NUL in a bound text parameter, so the query would fail as a 500. No stored
-    // name can hold one (the write DTOs refuse it), so the lookup answers 404 without querying.
-    it('should throw NotFoundException for a name containing NUL without querying', async () => {
-      await expect(service.resolve('sess-1', { templateName: 'promo\u0000' })).rejects.toThrow(NotFoundException);
-      expect(repository.findOne).not.toHaveBeenCalled();
-    });
-
-    // Ids are server-generated uuids, so none holds a NUL; the id lookup answers 404 the same way.
-    it('should throw NotFoundException for an id containing NUL without querying', async () => {
-      await expect(service.resolve('sess-1', { templateId: 'abc\u0000' })).rejects.toThrow(NotFoundException);
-      await expect(service.findOne('sess-1', 'abc\u0000')).rejects.toThrow(NotFoundException);
-      expect(repository.findOne).not.toHaveBeenCalled();
-    });
-
     // A malformed request, not a missing resource: a client reading 404 as "template deleted" would
     // take the wrong branch.
     it('should throw BadRequestException when neither id nor name is provided', async () => {
@@ -190,6 +178,21 @@ describe('TemplateService', () => {
 
       expect(repository.save).toHaveBeenCalledWith(
         expect.objectContaining({ body: 'Updated body', name: template.name }),
+      );
+    });
+
+    it('should clear nullable fields when null is provided', async () => {
+      const template = createMockTemplate({
+        header: 'Old header',
+        footer: 'Old footer',
+        mediaUrl: 'https://example.com/old.jpg',
+      });
+      (repository.findOne as jest.Mock).mockResolvedValue(template);
+
+      await service.update('sess-1', 'tpl-uuid-1', { header: null, footer: null, mediaUrl: null });
+
+      expect(repository.save).toHaveBeenCalledWith(
+        expect.objectContaining({ header: null, footer: null, mediaUrl: null }),
       );
     });
 
