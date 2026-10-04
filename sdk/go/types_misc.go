@@ -19,17 +19,19 @@ type DependencyStatus struct {
 // name (e.g. "mainDatabase", "dataDatabase") to its DependencyStatus.
 type HealthReadyResponse struct {
 	Status  string                      `json:"status"`
-	Details map[string]DependencyStatus `json:"details,omitempty"`
+	Details map[string]DependencyStatus `json:"details"`
 }
 
 // ── Auth ─────────────────────────────────────────────────
 
-// AuthValidateResponse reports whether the API key is valid, its role, and the
-// engine the gateway runs.
+// AuthValidateResponse reports whether the API key is valid, its role, the
+// engine the gateway runs, and whether the key is restricted to selected
+// sessions.
 type AuthValidateResponse struct {
 	Valid      bool   `json:"valid"`
 	Role       string `json:"role,omitempty"`
 	EngineType string `json:"engineType,omitempty"`
+	Scoped     bool   `json:"scoped,omitempty"`
 }
 
 // ── Template ───────────────────────────────────────────
@@ -46,21 +48,12 @@ type TemplateRecord struct {
 	UpdatedAt string  `json:"updatedAt"`
 }
 
-type TemplateType string
-
-const (
-	TemplateTypeText  TemplateType = "text"
-	TemplateTypeImage TemplateType = "image"
-)
-
 // CreateTemplateRequest creates a template. Name and Body required.
 type CreateTemplateRequest struct {
-	Name     string       `json:"name"`
-	Body     string       `json:"body"`
-	Header   string       `json:"header,omitempty"`
-	Footer   string       `json:"footer,omitempty"`
-	Type     TemplateType `json:"type,omitempty"`
-	MediaURL string       `json:"mediaUrl,omitempty"`
+	Name   string `json:"name"`
+	Body   string `json:"body"`
+	Header string `json:"header,omitempty"`
+	Footer string `json:"footer,omitempty"`
 }
 
 // UpdateTemplateRequest updates a template; all fields optional.
