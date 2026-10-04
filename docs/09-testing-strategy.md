@@ -38,6 +38,7 @@ npm --prefix dashboard run test:unit
 | `npm test -- --runInBand`                                        | Run backend tests serially; useful for local debugging and clean output  |
 | `npm run test:cov`                                               | Run backend tests with coverage and coverage thresholds                  |
 | `npm run test:e2e`                                               | Run smoke-level e2e tests from `test/`                                   |
+| `npm run test:docs`                                              | Run the docs and manifest drift gates that `npm test` excludes           |
 | `npm run test:pg-smoke`                                          | Run the PostgreSQL migration and UUID-default smoke test                 |
 | `npm run test:scripts`                                           | Run the repo-level script tests on the Node test runner                  |
 | `npm run build && npm run test:engine-real`                      | Feed inbound messages through the real Baileys library and built adapter |
@@ -61,9 +62,6 @@ npm --prefix dashboard run test:unit
 | `cd sdk/php && ./vendor/bin/phpunit`                             | Run the PHP SDK tests                                                    |
 | `cd sdk/java && mvn -B verify`                                   | Run the Java SDK tests                                                   |
 | `cd sdk/go && gofmt -l . && go vet ./... && go test -race ./...` | List unformatted files, vet, and race-test the Go SDK                    |
-| `npm run test:scripts`                                           | Run the install-script tests (`node --test scripts/postinstall.spec.js`) |
-| `npm run check:dockerignore`                                     | Verify `.dockerignore` still excludes what the image must not carry      |
-| `npm run check:versions`                                         | Verify docs and Swagger track the `package.json` version                 |
 
 ## 9.3 Backend Unit Tests
 
@@ -154,22 +152,13 @@ E2E smoke tests live in `test/` and use `test/jest-e2e.json`.
 ```text
 test/
 ├── __mocks__/
+├── engine-real/
 ├── fixtures/
-├── app.e2e-spec.ts
-├── baileys-engine.e2e-spec.ts
-├── chat-scope.e2e-spec.ts
-├── ingress-instance-throttle.e2e-spec.ts
-├── integration-fabric.e2e-spec.ts
-├── integration-instance.e2e-spec.ts
-├── mcp-auth.e2e-spec.ts
-├── queue-on.e2e-spec.ts
-├── search.e2e-spec.ts
-├── serve-static.e2e-spec.ts
-├── session-scope.e2e-spec.ts
-├── setup-e2e-env.e2e-spec.ts
-├── webhooks.e2e-spec.ts
+├── helpers/
+├── *.e2e-spec.ts        (one suite per surface)
 ├── jest-e2e.json
-└── setup-e2e.ts
+├── setup-e2e.ts
+└── teardown-e2e.ts
 ```
 
 `test/setup-e2e.ts` configures the app for local test boot before `AppModule` is imported:
@@ -265,17 +254,17 @@ demand (Node's built-in coverage, test files and `src/test-helpers/` excluded); 
 Main CI is defined in `.github/workflows/ci.yml`. A new push to a pull request cancels that pull
 request's superseded run; push runs on `main` are never cancelled or queued behind one another.
 
-| Job             | Checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `lint`          | backend ESLint, full-program TypeScript check, formatting, version consistency, .dockerignore context, OpenAPI snapshot, SDK routes and webhook events against the contract, contract coverage per SDK, SDK docs against the shipped client surface, client wire shapes (`check:contract-shapes` — the JavaScript SDK's, dashboard's, Python's, Go's and Java's hand-written types against the OpenAPI schemas; the PHP client returns untyped arrays and has no types layer to gate) |
-| `audit`         | dependency security audit of BOTH npm trees (root and `dashboard/`); when npm's audit endpoint cannot answer, the root audit skips with a warning annotation here, while the release gate and the weekly scan fail (`CHECK_AUDIT_REQUIRED=1`)                                                                                                                                                                                                                                         |
-| `test`          | backend coverage run, script unit tests (node:test), e2e smoke tests                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| `test-postgres` | real PostgreSQL 16 service, backend build, migration smoke, and PostgreSQL FTS provider spec                                                                                                                                                                                                                                                                                                                                                                                          |
-| `dashboard`     | dashboard install, lint, formatting, type-check, i18n parity, build, unit tests                                                                                                                                                                                                                                                                                                                                                                                                       |
-| `scripts-smoke` | shellcheck on `docker-entrypoint.sh` and every `scripts/*.sh`, plus the backup/restore smoke test                                                                                                                                                                                                                                                                                                                                                                                     |
-| `chart`         | helm lint, helm template with default and fully-toggled values, kubeconform on both renders, the rendered-behaviour check, actionlint on the workflows                                                                                                                                                                                                                                                                                                                                |
-| `build`         | backend build after lint/audit/test/dashboard/scripts-smoke/chart jobs pass, then `test:engine-real`, which feeds proto-built inbound messages through the real Baileys library and the compiled adapter (every jest lane stubs Baileys)                                                                                                                                                                                                                                              |
-| `docker`        | multi-arch build on pushes and pull requests, then against the built image `scripts/smoke-test-non-root.sh` (the entrypoint's root→openwa drop) and `scripts/smoke-test-engine-libs.sh` (imports Baileys, launches the browser; emulated arm64 only runs its binary). Publishes only on push: `:<sha>` from the build, then the branch tag (`:main`) once the smokes pass and only while the commit is still the branch head                                                          |
+| Job             | Checks                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lint`          | backend ESLint, full-program TypeScript check, formatting, version consistency, .dockerignore context, OpenAPI snapshot, SDK routes and webhook events against the contract, contract coverage per SDK, SDK docs against the shipped client surface, client wire shapes (`check:contract-shapes` — the JavaScript SDK's, dashboard's, Python's, Go's and Java's hand-written types against the OpenAPI schemas; the PHP client returns untyped arrays and has no types layer to gate)                                                              |
+| `audit`         | dependency security audit of BOTH npm trees (root and `dashboard/`); when npm's audit endpoint cannot answer, the root audit skips with a warning annotation here while the dashboard audit, a plain `npm audit`, fails closed, so the job still goes red until a re-run; the release gate and the weekly scan fail (`CHECK_AUDIT_REQUIRED=1`)                                                                                                                                                                                                     |
+| `test`          | backend coverage run, repo-file drift gates (`test:docs`), script unit tests (node:test), e2e smoke tests                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| `test-postgres` | real PostgreSQL 16 service, backend build, migration smoke, and the PostgreSQL specs (FTS provider, boot-migration lock, message list ordering, entity synchronize, UTC pin)                                                                                                                                                                                                                                                                                                                                                                       |
+| `dashboard`     | dashboard install, lint, formatting, type-check, i18n parity, build, unit tests                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| `scripts-smoke` | shellcheck on `docker-entrypoint.sh` and every `scripts/*.sh`, plus the backup/restore smoke test                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `chart`         | helm lint, helm template with default and fully-toggled values, kubeconform on both renders, the rendered-behaviour check, actionlint on the workflows                                                                                                                                                                                                                                                                                                                                                                                             |
+| `build`         | backend build after lint/audit/test/dashboard/scripts-smoke/chart jobs pass, then `test:engine-real`, which feeds proto-built inbound messages through the real Baileys library and the compiled adapter (every jest lane stubs Baileys)                                                                                                                                                                                                                                                                                                           |
+| `docker`        | multi-arch build on pushes and pull requests, then against the built image `scripts/smoke-test-non-root.sh` (the entrypoint's root→openwa drop) and `scripts/smoke-test-engine-libs.sh` (imports Baileys and launches the browser, on the runner's native architecture only; the release workflow also runs it for linux/arm64 under emulation, where only the browser binary is executed). Publishes only on push: `:<sha>` from the build, then the branch tag (`:main`) once the smokes pass and only while the commit is still the branch head |
 
 SDK CI is defined in `.github/workflows/sdk-ci.yml` and is path-filtered to SDK sources plus server
 contract surfaces that SDKs mirror (`src/**/dto/**`, `src/**/*.controller.ts`, `src/**/*.service.ts`, and
@@ -283,7 +272,7 @@ contract surfaces that SDKs mirror (`src/**/dto/**`, `src/**/*.controller.ts`, `
 re-runs the SDK suites. It runs:
 
 - JavaScript SDK tests, type-check, build, and dual CJS/ESM smoke test on Node 18 (the `engines` floor) and 22.
-- Python SDK tests with `pytest`.
+- Python SDK type check with `mypy` and tests with `pytest` on Python 3.9 and 3.12.
 - PHP SDK tests with PHPUnit.
 - Java SDK tests with Maven.
 - Go SDK formatting, `go vet`, and race-enabled tests at the declared Go floor.
@@ -368,9 +357,9 @@ Live WhatsApp checks require an operator-owned account and should not be part of
   smoke imports Baileys and launches the browser, neither of which needs WhatsApp to be reachable.
 - The default `test` job uses SQLite; PostgreSQL 16 is only exercised by the dedicated `test-postgres` job.
 - No default CI job exercises S3/MinIO or Docker socket proxy integration. (Redis is no longer a gap: the
-  `test` job starts a `redis:7-alpine` service container so the queue-on e2e suite has a broker. That suite
-  skips itself when no Redis is reachable, so it stays green on a machine without one; under GitHub Actions
-  it fails instead, so a workflow that loses its Redis service cannot report the suite green.)
+  `test` job starts a `redis:7-alpine` service container so the queue-on and throttler-redis e2e suites have a
+  broker. Those suites skip themselves when no Redis is reachable, so they stay green on a machine without one;
+  under GitHub Actions they fail instead, so a workflow that loses its Redis service cannot report them green.)
 - Performance testing is not automated.
 - Dashboard browser/visual UI tests are not currently automated; dashboard pure utility tests run via `npm --prefix dashboard run test:unit`.
 

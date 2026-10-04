@@ -1,5 +1,5 @@
 import { parentPort } from 'worker_threads';
-import { HostToWorkerMessage, WorkerToHostMessage } from './protocol';
+import { HostToWorkerMessage, PluginLogLevel, WorkerToHostMessage } from './protocol';
 import { WorkerCapabilityClient, buildSandboxContext } from './worker-capability';
 import { WorkerHookRegistry, WorkerHookHandler, hookConfigStore } from './worker-hooks';
 import { WebhookRegistry, WebhookHandler } from './worker-webhooks';
@@ -42,18 +42,25 @@ const hookRegistry = new WorkerHookRegistry(send);
 const webhookRegistry = new WebhookRegistry(send);
 const searchRegistry = new WorkerSearchRegistry(send);
 
+// A meta the structured clone cannot copy (a function, a fetch Response) makes postMessage throw. From
+// a timer that throw is uncaught and kills the worker, so the line goes out again without its meta,
+// keeping only logger.error's reason, which is always a string.
+const sendLog = (level: PluginLogLevel, message: string, meta?: Record<string, unknown>): void => {
+  try {
+    send({ kind: 'log', level, message, meta });
+  } catch {
+    const error = meta?.error;
+    send({ kind: 'log', level, message: String(message), meta: typeof error === 'string' ? { error } : undefined });
+  }
+};
+
 // ctx.logger proxy: forwards to the host's per-plugin logger (the same one in-process plugins use).
 const logger = {
-  log: (message: string, meta?: Record<string, unknown>) => send({ kind: 'log', level: 'log', message, meta }),
-  debug: (message: string, meta?: Record<string, unknown>) => send({ kind: 'log', level: 'debug', message, meta }),
-  warn: (message: string, meta?: Record<string, unknown>) => send({ kind: 'log', level: 'warn', message, meta }),
+  log: (message: string, meta?: Record<string, unknown>) => sendLog('log', message, meta),
+  debug: (message: string, meta?: Record<string, unknown>) => sendLog('debug', message, meta),
+  warn: (message: string, meta?: Record<string, unknown>) => sendLog('warn', message, meta),
   error: (message: string, error?: unknown, meta?: Record<string, unknown>) =>
-    send({
-      kind: 'log',
-      level: 'error',
-      message,
-      meta: error !== undefined ? { ...meta, error: errorMessage(error) } : meta,
-    }),
+    sendLog('error', message, error !== undefined ? { ...meta, error: errorMessage(error) } : meta),
 };
 let plugin: LifecyclePlugin | null = null;
 let context: Record<string, unknown> | null = null;
@@ -130,10 +137,12 @@ async function handle(message: HostToWorkerMessage): Promise<void> {
   if (message.kind === 'config-change') {
     // Refresh the base config so later (non-hook) reads of ctx.config see the new value, then notify
     // the plugin (fire-and-forget — onConfigChange returns void, and an ack would race the next op).
+    // Called inside the chain so a synchronous throw is caught too: escaping here, it would reject the
+    // discarded handle() promise and the unhandled rejection would kill the worker.
     baseConfig = message.config;
-    void Promise.resolve(plugin?.onConfigChange?.(context, message.config)).catch(error =>
-      logger.error('onConfigChange threw', error),
-    );
+    void Promise.resolve()
+      .then(() => plugin?.onConfigChange?.(context, message.config))
+      .catch(error => logger.error('onConfigChange threw', error));
     return;
   }
 

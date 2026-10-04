@@ -32,12 +32,15 @@
     "never": "אף פעם",
     "justNow": "ממש עכשיו",
     "minAgo": "לפני {{count}} דקה",
+    "minAgo_many": "לפני {{count}} דקות",
     "minAgo_other": "לפני {{count}} דקות",
     "minAgo_two": "לפני שתי דקות",
     "hoursAgo": "לפני {{count}} שעה",
+    "hoursAgo_many": "לפני {{count}} שעות",
     "hoursAgo_other": "לפני {{count}} שעות",
     "hoursAgo_two": "לפני שעתיים",
     "optional": "אופציונלי",
+    "fieldTooLong": "מוגבל ל-{{max}} תווים (כרגע {{count}}).",
     "language": "שפה",
     "back": "חזרה",
     "next": "הבא",
@@ -91,8 +94,10 @@
     "empty": "אין שיחות",
     "noMessageYet": "אין הודעות עדיין",
     "unreadBadge": "{{count}} הודעה שלא נקראה",
+    "unreadBadge_many": "{{count}} הודעות שלא נקראו",
     "unreadBadge_other": "{{count}} הודעות שלא נקראו",
     "unreadBadge_two": "שתי הודעות שלא נקראו",
+    "markedUnread": "סומן כלא נקרא",
     "loadingMessages": "טוען הודעות...",
     "loadingOlderMessages": "טוען הודעות ישנות יותר...",
     "loadOlderMessagesError": "טעינת ההודעות הישנות נכשלה. גלול למעלה כדי לנסות שוב.",
@@ -124,7 +129,6 @@
       "unknownType": "סוג לא ידוע"
     },
     "you": "אתה",
-    "youPrefix": "אתה: ",
     "yesterday": "אתמול",
     "attachTitle": "שליחת קובץ / תמונה",
     "emojiTitle": "בחירת אימוג'י",
@@ -158,6 +162,7 @@
       "itemCount": "עדכון {{count}}",
       "itemCount_one": "עדכון {{count}}",
       "itemCount_two": "{{count}} עדכונים",
+      "itemCount_many": "{{count}} עדכונים",
       "itemCount_other": "{{count}} עדכונים",
       "empty": "לאף איש קשר אין סטטוס פעיל.",
       "loadError": "טעינת הסטטוסים נכשלה.",
@@ -183,6 +188,7 @@
       "empty": "עדיין אינך רשום/ה לאף ערוץ.",
       "notReady": "הסשן עדיין אינו מוכן.",
       "subscribers": "{{count}} מנוי",
+      "subscribers_many": "{{count}} מנויים",
       "subscribers_other": "{{count}} מנויים",
       "subscribers_two": "שני מנויים"
     },
@@ -353,7 +359,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "לא הוגדר proxy",
       "hasCredentials": "פרטי הגישה שמורים אך אינם מוצגים. כדי לשנות אותם יש להזין כתובת URL מלאה.",
-      "hint": "השינויים חלים בהפעלה הבאה של הסשן, ולא על חיבור פעיל. ה-proxy חייב להיות אמיתי ונגיש: ערך שאינו נגיש חוסם את קבלת ה-QR, וההפעלה מחזירה 504.",
+      "hint": "השינויים חלים בהפעלה הבאה של הסשן, ולא על חיבור פעיל. ה-proxy חייב להיות אמיתי ונגיש: ערך שאינו נגיש חוסם את קבלת ה-QR. ב-whatsapp-web.js ההפעלה מחזירה 504, וב-Baileys ההפעלה מצליחה והסשן ממשיך לנסות שוב.",
       "createHint": "נדרש רק כשהרשת שלכם לא מצליחה להגיע ישירות ל-WhatsApp. חייב להיות proxy אמיתי ונגיש.",
       "invalidUrl": "יש להזין כתובת URL תקינה של proxy מסוג http, https, socks4 או socks5.",
       "saveSuccessTitle": "ה-proxy נשמר",
@@ -457,10 +463,12 @@
     "saveChanges": "שמירת שינויים",
     "filters": {
       "badge": "{{count}} מסנן",
+      "badge_many": "{{count}} מסננים",
       "badge_other": "{{count}} מסננים",
       "badge_two": "שני מסננים",
       "title": "מסננים (אופציונלי)",
       "hint": "הפעלה רק כאשר כל התנאים מתקיימים. חל על אירועי הודעות.",
+      "incomplete": "יש לתת ערך לכל תנאי סינון ולהשתמש בעד 20 תנאים, עד 100 ערכים לכל תנאי ועד 1000 תווי טקסט.",
       "addCondition": "הוספת תנאי",
       "removeCondition": "הסרת תנאי",
       "caseSensitive": "תלוי רישיות",
@@ -492,11 +500,9 @@
       "valueLabel": "ערך סינון"
     },
     "columns": {
-      "url": "כתובת URL",
       "events": "אירועים",
       "session": "Session",
-      "status": "סטטוס",
-      "actions": "פעולות"
+      "status": "סטטוס"
     },
     "empty": {
       "title": "לא הוגדרו Webhooks",
@@ -606,6 +612,7 @@
     },
     "empty": {
       "title": "אין תבניות שמורות",
+      "noMatch": "אין תבניות שתואמות לחיפוש.",
       "description": "צרו תבנית לשימוש חוזר כדי לזרז תשובות והתראות נפוצות.",
       "noSessionsTitle": "אין סשנים זמינים",
       "noSessionsDesc": "צרו סשן WhatsApp לפני הוספת תבניות.",
@@ -675,7 +682,6 @@
       "revoke": "ביטול"
     },
     "actions": {
-      "copy": "העתקה",
       "revoke": "ביטול",
       "delete": "מחיקה",
       "edit": "עריכת גישה"
@@ -890,7 +896,7 @@
       "sslRejectUnauthorized": "אימות תעודת SSL",
       "sslRejectUnauthorizedDesc": "דחיית תעודות בחתימה עצמית או לא תקפות. כבה עבור Postgres מנוהל עם תעודות בחתימה עצמית (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Migrations של מסד הנתונים",
-      "migrationsStatus": "הסכמה מסונכרנת אוטומטית עם TypeORM",
+      "migrationsStatus": "Migrations ממתינים מוחלים אוטומטית בעת ההפעלה",
       "migrationsHint": "ה-Migrations מנוהלים אוטומטית. ניתן להשתמש ב-CLI ל-Migrations ידניים."
     },
     "engine": {
@@ -913,7 +919,7 @@
     "redis": {
       "title": "Redis",
       "enable": "הפעלת Redis",
-      "enableDesc": "נדרש למטמון, אחסון Sessions ותורי BullMQ",
+      "enableDesc": "משמש למטמון, לתורי BullMQ, למוני הגבלת קצב ולהפצת WebSocket בין צמתים מרובים",
       "useBuiltIn": "שימוש בקונטיינר Redis מובנה",
       "builtInDesc": "OpenWA ינהל עבורך קונטיינר Redis",
       "queueTitle": "הפעלת מערכת התורים BullMQ",
@@ -925,7 +931,7 @@
       "failed": "נכשלו",
       "viewBullMq": "פתיחת Bull MQ Dashboard",
       "disabledTitle": "Redis מושבת",
-      "disabledDesc": "יש להפעיל את Redis למטמון, אחסון Sessions ותורי הודעות BullMQ.",
+      "disabledDesc": "יש להפעיל את Redis למטמון, לתורי הודעות BullMQ, למוני הגבלת קצב ולהפצת WebSocket בין צמתים מרובים.",
       "passwordOptional": "(אופציונלי)",
       "bullMqUrlCopied": "כתובת לוח Bull MQ הועתקה",
       "bullMqUrlHint": "פתח אותו עם מפתח API מסוג ADMIN — לשונית דפדפן אינה יכולה לאמת."
@@ -965,7 +971,7 @@
       "checking": "בודק את סטטוס השרת...",
       "dontClose": "אין לסגור חלון זה",
       "successMsg": "השרת חזר לפעולה! הדף ייטען מחדש אוטומטית.",
-      "errorMsg": "השרת לא הגיב לאחר 30 שניות. יש לבדוק את לוגי Docker ולאתחל ידנית.",
+      "errorMsg": "השרת לא הגיב. יש לבדוק את לוגי Docker ולאתחל ידנית.",
       "outcomeUnknown": "ה-proxy החזיר שגיאה לפני שהשרת הגיב, ולכן לא ידוע אם האתחול מתבצע. יש לטעון את הדף מחדש בעוד דקה כדי לבדוק.",
       "reload": "טעינת הדף מחדש"
     },
@@ -1028,7 +1034,7 @@
     "config": {
       "title": "הגדרת {{name}}",
       "noOptions": "אין אפשרויות הגדרה זמינות עבור תוסף זה",
-      "uiHandshakeError": "ממשק הגדרת התוסף לא אותחל. השתמשו בטופס שלמטה אם הוא זמין.",
+      "uiHandshakeError": "ממשק הגדרת התוסף לא אותחל.",
       "save": "שמירת תצורה",
       "addItem": "הוספה",
       "tabConfig": "הגדרות",
@@ -1059,7 +1065,7 @@
       "healthFail": "בדיקת התקינות נכשלה",
       "healthError": "שגיאה בבדיקת תקינות",
       "savedTitle": "התצורה נשמרה",
-      "savedDesc": "נדרש אתחול שרת כדי להחיל את השינויים.",
+      "savedDesc": "השינויים נכנסים לתוקף ללא אתחול השרת.",
       "saveFailed": "השמירה נכשלה",
       "installed": "התוסף הותקן",
       "installFailed": "ההתקנה נכשלה",
@@ -1164,7 +1170,7 @@
   },
   "search": {
     "placeholder": "חיפוש הודעות…",
-    "results": "{{count}} תוצאות",
+    "loadMore": "הצג עוד ({{shown}} מתוך {{total}})",
     "empty": "לא נמצאו הודעות.",
     "error": "החיפוש נכשל. נסה שוב.",
     "unavailable": "החיפוש אינו מוגדר.",

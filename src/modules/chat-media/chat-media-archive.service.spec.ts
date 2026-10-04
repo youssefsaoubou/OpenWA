@@ -148,6 +148,21 @@ describe('ChatMediaArchiveService', () => {
       expect(files).toEqual([first]);
     });
 
+    it('keeps one file when two writers archive the same row concurrently', async () => {
+      // Both callers hold a snapshot read before either pointer landed, so the in-memory guard
+      // passes twice; the pointer write itself has to pick one winner.
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+
+      const keys = await Promise.all([enabled().archive(row), enabled().archive(row)]);
+      const winner = keys.filter(k => k !== null);
+
+      expect(winner).toHaveLength(1);
+      expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBe(winner[0]);
+      const files = [];
+      for await (const f of storageService.iterateFiles('')) files.push(f);
+      expect(files).toEqual(winner);
+    });
+
     it('skips media above the archive cap without touching the row', async () => {
       const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
 
@@ -179,6 +194,20 @@ describe('ChatMediaArchiveService', () => {
       expect(files).toHaveLength(1);
       expect((await repository.findOneByOrFail({ id: row.id })).mediaPath).toBeNull();
       update.mockRestore();
+    });
+
+    it('still returns null when the unreferenced file cannot be removed after a skipped update', async () => {
+      const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
+      const update = jest
+        .spyOn(repository, 'update')
+        .mockResolvedValueOnce({ affected: 0, raw: [], generatedMaps: [] });
+      const del = jest.spyOn(storageService, 'deleteFile').mockRejectedValueOnce(new Error('s3 down'));
+
+      await expect(enabled().archive(row)).resolves.toBeNull();
+
+      expect(del).toHaveBeenCalledWith(expect.stringMatching(new RegExp(`^${CHAT_MEDIA_PREFIX}sess-1/`)));
+      update.mockRestore();
+      del.mockRestore();
     });
 
     it('does not point a row revoked while its file was written back at the media', async () => {
@@ -395,6 +424,25 @@ describe('ChatMediaArchiveService', () => {
       del.mockRestore();
     }, 30_000);
 
+    it('does not plan the batch select as a walk of the whole table on SQLite', async () => {
+      // Ordering by the bare primary key lets SQLite satisfy ORDER BY from its autoindex and then
+      // visit every row in the table, which blocks the event loop on every tick once the backlog is
+      // drained. The plan must start from the createdAt range instead.
+      await seedExpired(1);
+      const runner = Object.getPrototypeOf(ds.createQueryRunner()) as {
+        query: (sql: string, params?: unknown[]) => Promise<unknown>;
+      };
+      const query = jest.spyOn(runner, 'query');
+
+      await enabled({ 'chatMedia.ttlDays': 7 }).purgeExpired(Date.now());
+
+      const select = query.mock.calls.find(([sql]) => /^SELECT/i.test(sql) && /LIMIT/i.test(sql));
+      query.mockRestore();
+      expect(select).toBeDefined();
+      const plan = await ds.query<{ detail: string }[]>(`EXPLAIN QUERY PLAN ${select![0]}`, select![1]);
+      expect(plan.map(p => p.detail).join('\n')).not.toMatch(/SCAN .*sqlite_autoindex_messages/);
+    });
+
     it('stops instead of spinning when every delete in a batch fails', async () => {
       await seedExpired(3);
       const del = jest.spyOn(storageService, 'deleteFile').mockRejectedValue(new Error('s3 down'));
@@ -422,6 +470,20 @@ describe('ChatMediaArchiveService', () => {
       const files = [];
       for await (const f of storageService.iterateFiles(CHAT_MEDIA_PREFIX)) files.push(f);
       expect(files).toEqual([]);
+    });
+
+    it('warns and keeps the file when deleting an orphan past its grace window fails', async () => {
+      const key = `${CHAT_MEDIA_PREFIX}sess-1/orphan.png`;
+      await storageService.putFile(key, PNG);
+      const svc = enabled({ 'chatMedia.orphanGraceMs': 0 });
+      const warn = jest.spyOn((svc as unknown as { logger: { warn: () => void } }).logger, 'warn');
+      const del = jest.spyOn(storageService, 'deleteFile').mockRejectedValueOnce(new Error('s3 down'));
+
+      expect(await svc.sweepOrphanedMedia(Date.now())).toBe(0);
+
+      expect(warn).toHaveBeenCalledWith(`Failed to delete orphaned chat media ${key}`, { error: 'Error: s3 down' });
+      expect(await storageService.getFile(key)).toEqual(PNG);
+      del.mockRestore();
     });
 
     it('never reaps a file a row still references, however long it sits there', async () => {
@@ -499,6 +561,24 @@ describe('ChatMediaArchiveService', () => {
       setInterval.mockRestore();
     });
 
+    it('logs a failed purge or orphan sweep instead of leaving the rejection unhandled', async () => {
+      const svc = build();
+      jest.spyOn(svc, 'purgeExpired').mockRejectedValue(new Error('db gone'));
+      jest.spyOn(svc, 'sweepOrphanedMedia').mockRejectedValue(new Error('bucket gone'));
+      const logError = jest
+        .spyOn((svc as unknown as { logger: { error: (...args: unknown[]) => void } }).logger, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        svc.onModuleInit();
+        await new Promise(resolve => setImmediate(resolve));
+
+        expect(logError).toHaveBeenCalledWith('Chat media purge failed', expect.stringContaining('db gone'));
+        expect(logError).toHaveBeenCalledWith('Chat media orphan sweep failed', expect.stringContaining('bucket gone'));
+      } finally {
+        svc.onModuleDestroy();
+      }
+    });
+
     it('still expires an archived file past its TTL while archiving is off', async () => {
       const row = await saveRow({ mimetype: 'image/png', data: PNG.toString('base64') });
       const key = await enabled().archive(row);
@@ -532,20 +612,20 @@ describe('ChatMediaArchiveService', () => {
         .mockImplementationOnce(() => new Promise<void>(resolve => (releaseDelete = resolve)));
       const svc = build({ 'chatMedia.ttlDays': 7 });
       const sweep = jest.spyOn(svc, 'sweepOrphanedMedia').mockResolvedValue(0);
-      const find = jest.spyOn(repository, 'find');
+      const select = jest.spyOn(repository, 'createQueryBuilder');
       try {
         svc.onModuleInit();
         await jest.advanceTimersByTimeAsync(15 * 60 * 1000);
         await jest.advanceTimersByTimeAsync(15 * 60 * 1000);
-        expect(find).toHaveBeenCalledTimes(1);
+        expect(select).toHaveBeenCalledTimes(1);
 
         releaseDelete();
         await jest.advanceTimersByTimeAsync(15 * 60 * 1000);
-        expect(find.mock.calls.length).toBeGreaterThan(1);
+        expect(select.mock.calls.length).toBeGreaterThan(1);
       } finally {
         svc.onModuleDestroy();
         releaseDelete();
-        [del, sweep, find].forEach(spy => spy.mockRestore());
+        [del, sweep, select].forEach(spy => spy.mockRestore());
         jest.useRealTimers();
       }
     });

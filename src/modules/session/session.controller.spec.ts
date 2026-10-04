@@ -580,3 +580,41 @@ describe('SessionController: GET .../groups filters before paginating', () => {
     expect(out).toHaveLength(1000);
   });
 });
+
+// The engine-init deadline and the whatsapp-web.js auth timeout both answer a start with 504, the
+// most common start failure; clients generated from the OpenAPI contract need it declared.
+describe('SessionController.start() OpenAPI responses', () => {
+  it('declares the 504 an engine start timeout returns', () => {
+    const responses = Reflect.getMetadata(
+      'swagger/apiResponse',
+      Object.getOwnPropertyDescriptor(SessionControllerClass.prototype, 'start')!.value as object,
+    ) as Record<string, unknown>;
+    expect(Object.keys(responses)).toContain('504');
+  });
+});
+
+describe('SessionController OpenAPI error responses', () => {
+  it.each([
+    ['create', '400'],
+    ['findAll', '400'],
+    ['forceKill', '502'],
+  ])('%s declares %s', (method, status) => {
+    const responses = Reflect.getMetadata(
+      'swagger/apiResponse',
+      Object.getOwnPropertyDescriptor(SessionControllerClass.prototype, method)!.value as object,
+    ) as Record<string, unknown>;
+    expect(Object.keys(responses)).toContain(status);
+  });
+});
+
+// getPresence answers a normal 200 with a JSON null body when nothing was reported, so the published
+// schema must admit null or a generated client rejects that answer.
+describe('SessionController.getPresence() OpenAPI response', () => {
+  it('declares the 200 body nullable', () => {
+    const responses = Reflect.getMetadata(
+      'swagger/apiResponse',
+      Object.getOwnPropertyDescriptor(SessionControllerClass.prototype, 'getPresence')!.value as object,
+    ) as Record<string, { schema?: { nullable?: boolean } }>;
+    expect(responses['200'].schema?.nullable).toBe(true);
+  });
+});

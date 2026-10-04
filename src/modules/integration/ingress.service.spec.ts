@@ -149,6 +149,27 @@ describe('IngressService.handle', () => {
     expect(res.status).toBe(202);
   });
 
+  it('persists the request method so a replay keeps it', async () => {
+    const d = deps();
+    await new IngressService(d).handle({ ...req, method: 'PUT' });
+    const [recorded] = d.events.recordOrSkip.mock.calls[0] as [{ payload: { method?: string } }];
+    expect(recorded.payload.method).toBe('PUT');
+    // The job carries the method at its top level; its payload stays the plain request shape.
+    const [job] = d.enqueue.mock.calls[0] as [{ method: string; payload: { method?: string } }];
+    expect(job.method).toBe('PUT');
+    expect(job.payload.method).toBeUndefined();
+  });
+
+  // A body no parser read would be handled as the empty body: it passes a header-only scheme, and every
+  // such delivery hashes to the same dedup key, so all but the first are acked and dropped.
+  it('refuses a body in a content type no parser read (415), before anything is persisted', async () => {
+    const d = deps();
+    const res = await new IngressService(d).handle({ ...req, rawBody: '', unparsedBody: true });
+    expect(res).toMatchObject({ status: 415 });
+    expect(d.events.recordOrSkip).not.toHaveBeenCalled();
+    expect(d.enqueue).not.toHaveBeenCalled();
+  });
+
   it('uses the signed webhook-id as the default Standard Webhooks dedup key', async () => {
     const rawKey = Buffer.from('0123456789abcdef0123456789abcdef', 'hex');
     const secret = `v1,whsec_${rawKey.toString('base64')}`;
@@ -870,7 +891,7 @@ describe('IngressService per-instance rate bucket', () => {
           route: 'chatwoot',
           maxBodyBytes: 1024,
           signature: { scheme: 'none' },
-          response: { preflight: ['session-alive'], ack: { status: 200 } },
+          response: { preflight: [{ type: 'session-alive' }], ack: { status: 200 } },
         }),
       }),
     );

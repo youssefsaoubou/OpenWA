@@ -247,6 +247,8 @@ export interface InfraExportDataResult {
   omittedInlineMedia: { messages: number; messageBatches: number };
 }
 
+const EMPTY_ARCHIVE_WARNING = 'Backup contained no rows to restore; refused to replace existing data. Check the file.';
+
 /** Result of POST /infra/import-data; InfraImportDataResponseDto is the published contract. */
 export interface InfraImportDataResult {
   imported: boolean;
@@ -260,7 +262,9 @@ export interface InfraImportDataResult {
   /**
    * True when an engine may still be writing into the restored tables, from any of three causes:
    * orphans deliberately left running (`force`), a `stopOrphans` teardown that failed, or sessions
-   * held by another node, which this request has no channel to stop. Restart to reconcile.
+   * held by another node, which this request has no channel to stop. Restart to reconcile those.
+   * Also true when the post-commit plugin binding re-sync failed; a restart does not repair that
+   * one, so its notice names the manual check instead.
    */
   restartRequired: boolean;
   /** Session ids with a running engine that the restored data no longer contains. */
@@ -290,6 +294,13 @@ export class InfraDataService {
    * run a destructive replace nobody is waiting on.
    */
   private importInFlight = false;
+
+  /**
+   * Exports running in this process. On better-sqlite3 an export's reads share the import's connection,
+   * so an export and an import that overlap would archive the import's uncommitted (possibly rolled-back)
+   * tables. Each refuses while the other runs.
+   */
+  private exportsInFlight = 0;
 
   constructor(
     private readonly configService: ConfigService,
@@ -355,7 +366,24 @@ export class InfraDataService {
 
   async exportData(): Promise<InfraExportDataResult> {
     this.assertExportRegistryMatchesMetadata();
+    if (this.importInFlight) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'A data import is running; export after it finishes.',
+        code: 'IMPORT_ALREADY_RUNNING',
+      });
+    }
+    this.exportsInFlight++;
+    try {
+      return await this.runExport();
+    } finally {
+      this.exportsInFlight--;
+    }
+  }
 
+  /** The table reads behind exportData, entered only through its import guard. */
+  private async runExport(): Promise<InfraExportDataResult> {
     // The tables below may legitimately not exist yet (created by migrations an older DB has not run).
     // Only a GENUINE missing-table error (isMissingTableError) may be tolerated — anything else (lock,
     // I/O, timeout, aborted connection) must FAIL the export. The old blind `catch { debug-log }`
@@ -399,6 +427,17 @@ export class InfraDataService {
       }
       tables[entry.key] = rows as never;
       counts[entry.key] = rows.length;
+    }
+
+    // See ExportTable.sessionFk: a child row of a session missing from the archive cannot be restored.
+    const exportedSessions = new Set(tables.sessions.map(session => session.id));
+    for (const entry of EXPORT_TABLES) {
+      if (!entry.sessionFk) continue;
+      const kept = (tables[entry.key] as Array<{ sessionId: string }>).filter(row =>
+        exportedSessions.has(row.sessionId),
+      );
+      tables[entry.key] = kept as never;
+      counts[entry.key] = kept.length;
     }
 
     // Audit the full-DB export: this payload carries plugin-instance secrets, so WHO pulled
@@ -491,6 +530,14 @@ export class InfraDataService {
         code: 'IMPORT_ALREADY_RUNNING',
       });
     }
+    if (this.exportsInFlight > 0) {
+      throw new ConflictException({
+        statusCode: 409,
+        error: 'Conflict',
+        message: 'A data export is running; import after it finishes.',
+        code: 'EXPORT_IN_PROGRESS',
+      });
+    }
     this.importInFlight = true;
     try {
       return await this.runImport(data);
@@ -534,6 +581,31 @@ export class InfraDataService {
       if (badRow !== -1) {
         throw new BadRequestException(`tables.${table}[${badRow}] must be a row object`);
       }
+    }
+
+    // An archive with no rows is always refused (see the totalRestored check below), so refuse it here,
+    // before the orphan pre-flight: with no sessions in it every running engine reads as an orphan, and
+    // a stopOrphans retry would tear all of them down for a restore that was never going to happen.
+    // A row a skip guard vetoes is just as certain a rollback (see the warnings gate below), and the
+    // guards read only the archived tables, so run them here too. The in-transaction call stays as a backstop.
+    const refusals = TABLE_IMPORTERS.every(importer => !data.tables[importer.key]?.length)
+      ? [EMPTY_ARCHIVE_WARNING]
+      : TABLE_IMPORTERS.flatMap(importer =>
+          (data.tables[importer.key] ?? [])
+            .map((row, _index, rows) => importer.skip?.(row as never, rows as never))
+            .filter((warning): warning is string => warning != null),
+        );
+    if (refusals.length > 0) {
+      return {
+        imported: false,
+        counts: Object.fromEntries(TABLE_IMPORTERS.map(importer => [importer.key, 0] as const)) as TableCounts,
+        warnings: refusals,
+        notices: [],
+        restartRequired: false,
+        orphanedEngines: [],
+        stoppedOrphanEngines: [],
+        failedOrphanEngines: [],
+      };
     }
 
     const importedSessionIds = new Set((data.tables.sessions ?? []).map(s => s.id));
@@ -582,12 +654,13 @@ export class InfraDataService {
             `(removed from the engine registry; a process restart guarantees cleanup).`,
         );
       }
-      // Engines still mid-initialization (no Map entry yet) are reported in notRunning: their start()
-      // self-aborts via the stop mark, but they are not counted as stopped here.
+      // Sessions with no engine yet are reported in notRunning: one still initializing aborts its start()
+      // on the stop mark, and one waiting to relaunch after a failed reconnect had its relaunch cancelled.
+      // Neither is counted as stopped here.
       if (result.notRunning.length > 0) {
         notices.push(
-          `${result.notRunning.length} orphan session(s) had no live engine yet (still initializing): ` +
-            `${result.notRunning.join(', ')} — their start() will self-abort.`,
+          `${result.notRunning.length} orphan session(s) had no live engine yet (initializing or waiting to ` +
+            `reconnect): ${result.notRunning.join(', ')}; they will not start.`,
         );
       }
     } else if (orphanedEngines.length > 0 && !data.force) {
@@ -791,7 +864,7 @@ export class InfraDataService {
             // cannot carry, and this loop is the one place it is known — so the cast lives here rather
             // than at each of the three uses below.
             const row = untypedRow as never;
-            const skipWarning = importer.skip?.(row);
+            const skipWarning = importer.skip?.(row, rows as never);
             if (skipWarning != null) {
               warnings.push(skipWarning);
               continue;
@@ -906,14 +979,14 @@ export class InfraDataService {
         }
 
         // A wrong/empty/garbage backup file restores zero rows but the DELETE already ran — committing
-        // would silently WIPE the database and report success. Refuse it and roll back instead. (#488 review)
+        // would silently WIPE the database and report success. Refuse it and roll back instead. (#488)
         const totalRestored = Object.values(counts).reduce((sum, n) => sum + n, 0);
         if (totalRestored === 0) {
           await queryRunner.rollbackTransaction();
           return {
             imported: false,
             counts,
-            warnings: ['Backup contained no rows to restore; refused to replace existing data. Check the file.'],
+            warnings: [EMPTY_ARCHIVE_WARNING],
             notices,
             ...engineStateAfterRollback,
           };
@@ -956,7 +1029,9 @@ export class InfraDataService {
 
         // restartRequired was computed in the pre-flight, from three independent causes: orphans left
         // running (force=true legacy path), a stopOrphans teardown that failed for at least one
-        // engine, and sessions held by another node, which this request cannot reach to stop.
+        // engine, and sessions held by another node, which this request cannot reach to stop. It is
+        // also set above when the post-commit plugin binding re-sync fails; a restart does not repair
+        // that one, so its notice names the manual check instead.
         return {
           imported: true,
           counts,

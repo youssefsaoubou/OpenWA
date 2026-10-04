@@ -5,6 +5,7 @@ jest.mock('../../adapters/whatsapp-web-js.adapter', () => ({
 import { WhatsAppWebJsPlugin } from './index';
 import { WhatsAppWebJsAdapter } from '../../adapters/whatsapp-web-js.adapter';
 import { PluginContext } from '../../../core/plugins';
+import type { LidMappingStore } from '../../identity/lid-mapping-store.service';
 
 describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
   beforeEach(() => {
@@ -45,6 +46,14 @@ describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
         proxy: { url: 'http://p', type: 'http' },
       }),
     );
+  });
+
+  it('threads the shared lid mapping store to the adapter', () => {
+    const lidMappingStore = {} as LidMappingStore;
+
+    new WhatsAppWebJsPlugin(undefined, lidMappingStore).createEngine({ sessionId: 's' });
+
+    expect(WhatsAppWebJsAdapter).toHaveBeenCalledWith(expect.objectContaining({ lidMappingStore }));
   });
 
   it('falls back to safe defaults when context has no config, leaving the flag list to the adapter', () => {
@@ -102,6 +111,19 @@ describe('WhatsAppWebJsPlugin.createEngine (opaque config)', () => {
 
     expect(WhatsAppWebJsAdapter).toHaveBeenCalledWith(
       expect.objectContaining({ sessionId: 'sess-4', sessionDataPath: '/context/path' }),
+    );
+  });
+
+  // The factory hardens and purges credential dirs under its own base, so the engine must write there
+  // even when a persisted plugin-config override names another directory.
+  it('Prefers the per-call sessionDataPath over a context.config override', () => {
+    const plugin = new WhatsAppWebJsPlugin();
+    withContext(plugin, { sessionDataPath: '/override/sessions' });
+
+    plugin.createEngine({ sessionId: 'sess-5', sessionDataPath: '/factory/sessions' });
+
+    expect(WhatsAppWebJsAdapter).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'sess-5', sessionDataPath: '/factory/sessions' }),
     );
   });
 });

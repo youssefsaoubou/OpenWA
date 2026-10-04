@@ -52,7 +52,7 @@ describe('pickSettledWebVersion', () => {
 
   it('skips builds newer than the settle window even if currentVersion is fresh', () => {
     const versions = [entry('2.3000.FRESH-alpha', 60 * 60 * 1000, 60 * 86_400_000)]; // 1h old
-    expect(pickSettledWebVersion(versions, now, '2.3000.FRESH-alpha')).toBe('2.3000.FRESH-alpha'); // none settled → fallback
+    expect(pickSettledWebVersion(versions, now, '2.3000.FALLBACK-alpha')).toBe('2.3000.FALLBACK-alpha'); // none settled → fallback
   });
 
   it('picks the NEWEST qualifying (settled) build', () => {
@@ -61,7 +61,7 @@ describe('pickSettledWebVersion', () => {
       entry('2.3000.NEW-alpha', settled() + 60_000, 50 * 86_400_000), // just past settle, newest qualifying
       entry('2.3000.MID-alpha', 5 * 86_400_000, 50 * 86_400_000),
     ];
-    expect(pickSettledWebVersion(versions, now, '2.3000.NEW-alpha')).toBe('2.3000.NEW-alpha');
+    expect(pickSettledWebVersion(versions, now, '2.3000.FALLBACK-alpha')).toBe('2.3000.NEW-alpha');
   });
 
   it('skips beta builds', () => {
@@ -395,6 +395,21 @@ describe('resolveWebVersionPin with a cache directory', () => {
     expect(a?.webVersionCache.type).toBe('local');
     expect(b?.webVersionCache.type).toBe('local');
     expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  // An auto pin moves to a newer build roughly daily, so keeping every build's page in memory grew
+  // without bound over a long uptime. Only the current build is kept; an older one is fetched again.
+  it('keeps only the latest build in memory', async () => {
+    const fetcher = jest.fn(() => Promise.resolve(page(HTML)));
+
+    await resolveWebVersionPin(fetcher as never, dir);
+    process.env.WWEBJS_WEB_VERSION = '2.3000.5678';
+    await resolveWebVersionPin(fetcher as never, dir);
+    await resolveWebVersionPin(fetcher as never, dir);
+    process.env.WWEBJS_WEB_VERSION = VERSION;
+    await resolveWebVersionPin(fetcher as never, dir);
+
+    expect(fetcher).toHaveBeenCalledTimes(3);
   });
 
   it('refuses a version that is not a build number, without fetching or writing', async () => {

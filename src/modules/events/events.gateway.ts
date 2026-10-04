@@ -314,7 +314,17 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
   }
 
-  async handleConnection(client: Socket) {
+  handleConnection(client: Socket): Promise<void> {
+    // socket.io sends CONNECT to the client before Nest calls this, and Nest binds the frame handlers
+    // without waiting for it, so a client that subscribes from its 'connect' handler can send a frame
+    // while the key below is still being validated. handleMessage waits on this promise; it is stored
+    // synchronously, before any frame can be dispatched.
+    const ready = this.authenticate(client);
+    (client.data as { authReady?: Promise<void> }).authReady = ready;
+    return ready;
+  }
+
+  private async authenticate(client: Socket): Promise<void> {
     // Resolve the client IP once here so the handshake throttle, the validation, and the
     // audit trail all use the same trusted-proxy-aware value (parity with the REST guard / MCP mount).
     const clientIp = this.resolveClientIp(client);
@@ -362,6 +372,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       // chat's events to it. Mirrors the REST guard's default-deny for unmarked routes.
       if ((validKey.allowedChats?.length ?? 0) > 0) {
         this.logger.warn(`Client ${client.id} rejected: chat-scoped key ${validKey.id} cannot subscribe to events`);
+        this.auditChatScopedRefusal(validKey, clientIp);
         client.emit(
           'message',
           this.createError('UNAUTHORIZED', 'API keys restricted to selected chats cannot subscribe to events'),
@@ -429,6 +440,19 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
   }
 
+  /**
+   * A refused chat-scoped key is a stored key turned away, which the REST guard, the MCP surface and
+   * Bull Board all record; the socket refusal returns before the handshake's catch, so it audits here.
+   */
+  private auditChatScopedRefusal(apiKey: ApiKey, clientIp: string): void {
+    void this.auditService.logWarn(AuditAction.API_KEY_AUTH_FAILED, {
+      apiKey,
+      ipAddress: clientIp,
+      metadata: { surface: 'websocket' },
+      errorMessage: 'API keys restricted to selected chats cannot subscribe to events',
+    });
+  }
+
   handleDisconnect(client: Socket) {
     this.untrackSocket(client);
     this.logger.log(`Client disconnected: ${client.id}`);
@@ -474,6 +498,14 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
       return this.reply(client, this.createError('RATE_LIMITED', 'Frame rate limit exceeded, slow down', requestId));
     }
 
+    // A frame sent during the handshake waits for it. Without this a subscribe found no key on the socket
+    // and was refused as 'API key is no longer valid', a server-side close the client does not retry.
+    // A socket the handshake refused has already been answered and closed, so its frame is dropped.
+    await (client.data as { authReady?: Promise<void> }).authReady;
+    if (client.disconnected) {
+      return undefined;
+    }
+
     switch (message?.type) {
       case 'subscribe':
         return this.reply(client, await this.handleSubscribe(client, message));
@@ -516,8 +548,15 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     let subscriberKey: ApiKey | null;
     try {
       subscriberKey = rawApiKey ? await this.authService.validateApiKey(rawApiKey, clientIp) : null;
-    } catch {
+    } catch (error) {
       subscriberKey = null;
+      // A key refused here was valid at connect (revoked, expired, deleted or IP-refused since), so it
+      // is audited like the handshake refusal; the socket is disconnected below, bounding the volume.
+      void this.auditService.logWarn(AuditAction.API_KEY_AUTH_FAILED, {
+        ipAddress: clientIp,
+        metadata: { surface: 'websocket' },
+        errorMessage: error instanceof Error ? error.message : String(error),
+      });
     }
     if (!subscriberKey) {
       client.emit('message', this.createError('UNAUTHORIZED', 'API key is no longer valid', requestId));
@@ -542,6 +581,7 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
         'API keys restricted to selected chats cannot subscribe to events',
         requestId,
       );
+      this.auditChatScopedRefusal(subscriberKey, clientIp);
       client.emit('message', refusal);
       client.disconnect();
       return refusal;
@@ -619,8 +659,13 @@ export class EventsGateway implements OnGatewayInit, OnGatewayConnection, OnGate
     }
   }
 
-  private handleUnsubscribe(client: Socket, message: WSUnsubscribeRequest): WSUnsubscribedResponse {
+  private handleUnsubscribe(client: Socket, message: WSUnsubscribeRequest): WSUnsubscribedResponse | WSErrorResponse {
     const { sessionId, requestId } = message;
+    // Same check as subscribe: a missing sessionId matched no room, left every subscription in place,
+    // and was still answered 'unsubscribed'.
+    if (!sessionId || typeof sessionId !== 'string') {
+      return this.createError('INVALID_SESSION', 'sessionId is required', requestId);
+    }
 
     // Leave all rooms for this session
     const clientRooms = Array.from(client.rooms);

@@ -6,7 +6,7 @@ import { MessageProjector } from '../session/message-projector.service';
 import { SendTextMessageDto, SendMediaMessageDto, SendAudioMessageDto, MessageResponseDto } from './dto';
 import { SendTemplateMessageDto } from './dto/send-template.dto';
 import { ReplyMessageDto, ClickButtonDto } from './dto/message-actions.dto';
-import { Message, MessageDirection } from './entities/message.entity';
+import { Message } from './entities/message.entity';
 import { HookManager, applySendingGate } from '../../core/hooks';
 import { SendPacingService } from './send-pacing.service';
 import { createLogger } from '../../common/services/logger.service';
@@ -148,11 +148,16 @@ export const DEFAULT_PIN_DURATION_SECONDS = 86400;
  * octet-stream so the media endpoint cannot host active content on the API origin.
  */
 const INERT_MEDIA_MIMETYPE =
-  /^(image\/(jpeg|png|gif|webp|bmp)|video\/(mp4|webm|quicktime|3gpp)|audio\/(mpeg|mp4|ogg|aac|wav|webm))(;|$)/;
+  /^(image\/(jpeg|png|gif|webp|bmp)|video\/(mp4|webm|quicktime|3gpp)|audio\/(mpeg|mp4|ogg|aac|wav|webm))$/;
 
-/** The declared mimetype when it is safe to echo back, else inert octet-stream. */
+/**
+ * The declared mimetype's normalized essence when it is safe to echo back, else inert octet-stream.
+ * Parameters are dropped rather than echoed: the sender wrote them, a comma among them makes a
+ * browser read a second type, and a character above U+00FF is refused as a header value.
+ */
 function inertMimetype(mimetype: string): string {
-  return INERT_MEDIA_MIMETYPE.test(mimetype) ? mimetype : 'application/octet-stream';
+  const essence = mimetype.split(';')[0].trim().toLowerCase();
+  return INERT_MEDIA_MIMETYPE.test(essence) ? essence : 'application/octet-stream';
 }
 
 @Injectable()
@@ -486,18 +491,6 @@ export class MessageService implements PluginMessagePort {
     return [...new Set([value, ...expanded])];
   }
 
-  /**
-   * Save incoming message (called from session webhook dispatch)
-   */
-  async saveIncomingMessage(sessionId: string, data: Partial<Message>): Promise<Message> {
-    const message = this.messageRepository.create({
-      ...data,
-      sessionId,
-      direction: MessageDirection.INCOMING,
-    });
-    return this.messageRepository.save(message);
-  }
-
   // ========== Phase 3: Reactions ==========
 
   async reactToMessage(sessionId: string, dto: { chatId: string; messageId: string; emoji: string }): Promise<void> {
@@ -513,14 +506,14 @@ export class MessageService implements PluginMessagePort {
   /**
    * Read a message's media: the archived file when one exists, else the inline copy persisted on
    * the message row. The fallback is what makes media sent BY the account retrievable here — the
-   * archive is written only on the inbound path, but outbound rows carry the payload inline: the
-   * REST send persists it, wwjs downloads it for the own-send echo, and Baileys downloads it for
-   * phone-composed fromMe messages (the Baileys API-send echo alone carries only a marker, which
-   * the REST-persisted copy covers) — #1165. It also serves an inbound message whose archived file
-   * was purged by retention while the inline copy lives on.
+   * archive covers outbound media only when CHAT_MEDIA_ARCHIVE_OUTBOUND=true, but outbound rows
+   * carry the payload inline: the REST send persists it, wwjs downloads it for the own-send echo, and
+   * Baileys downloads it for phone-composed fromMe messages (the Baileys API-send echo alone carries
+   * only a marker, which the REST-persisted copy covers) — #1165. It also serves an inbound message
+   * whose archived file was purged by retention while the inline copy lives on.
    *
-   * Unlike status media (only ever an image or video), chat media includes documents a sender chose
-   * the type of — so the declared mimetype is echoed back only when it is inert, and the caller
+   * Unlike status media (only ever an image, a video or a voice note), chat media includes documents
+   * a sender chose the type of — so the declared mimetype is echoed back only when it is inert, and the caller
    * serves the result as an attachment regardless. Both matter: an allow-list alone would still let
    * `image/svg+xml` through as active content on the API origin.
    */
@@ -700,9 +693,10 @@ export class MessageService implements PluginMessagePort {
     // Every gated sender's DTO addresses its destination as `chatId` except forward, which uses
     // `toChatId` — without the fallback a forward skipped the cold-reachout gate entirely, while
     // its persisted row still drained the cold budget. Edit carries a chatId too; the edited
-    // message's own row already makes that chat warm, so the gate is a no-op there.
+    // message's own row already makes that chat warm, so the cold rule is a no-op there. An edit
+    // writes no row, so it is judged against the caps without being held as a new send.
     const target = input as { chatId?: string; toChatId?: string };
-    await this.pacing.assertSendAllowed(sessionId, target.chatId ?? target.toChatId);
+    await this.pacing.assertSendAllowed(sessionId, target.chatId ?? target.toChatId, { hold: false });
     return applySendingGate(this.hookManager, sessionId, type, input, 'MessageService');
   }
 

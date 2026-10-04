@@ -27,7 +27,7 @@ export interface WebhookJobResult {
 }
 
 /**
- * The exact `failedReason` BullMQ 5.80.x sets when a job stalls more than `maxStalledCount` (worker
+ * The exact `failedReason` BullMQ 6.x sets when a job stalls more than `maxStalledCount` (worker
  * default 1, so the SECOND genuine stall): the stalled checker (moveStalledJobsToWait Lua script)
  * stores it as the job's deferred failure, and the worker then fails the job itself — emitting
  * 'failed' WITHOUT ever calling process(). Lock renewal means a slow-but-alive processor never
@@ -89,7 +89,13 @@ export class WebhookProcessor extends WorkerHost {
         // Before the try below on purpose: this is not an attempt, so it must never be logged as a
         // failure or file a dead-letter row. moveToDelayed does not spend one of the job's attempts.
         // At least a second: a job delayed to "now" is promoted straight back and would spin.
-        const delay = Math.max(1000, this.configService.get<number>('webhook.retryDelay', 5000));
+        const base = Math.max(1000, this.configService.get<number>('webhook.retryDelay', 5000));
+        // Each bounce doubles the job's wait, up to 64x, so a dead receiver's backlog is not promoted
+        // and bounced again every few seconds, a churn that would grow with the backlog. attemptsStarted
+        // counts every activation and attemptsMade only real attempts, so the gap, less this
+        // activation, is how many times this job was already bounced.
+        const bounces = Math.max(0, job.attemptsStarted - job.attemptsMade - 1);
+        const delay = base * 2 ** Math.min(bounces, 6);
         await job.moveToDelayed(Date.now() + delay + Math.floor(Math.random() * delay), token);
         throw new DelayedError();
       }

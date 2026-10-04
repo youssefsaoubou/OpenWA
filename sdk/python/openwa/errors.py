@@ -17,7 +17,11 @@ from typing import Any, Mapping
 
 
 class OpenWAError(Exception):
-    """Base class for every error raised by the SDK."""
+    """Base class for errors the SDK raises for an API response or a timeout.
+
+    Connection failures surface as ``httpx.TransportError``; an invalid argument (a missing
+    ``base_url`` or ``api_key``, an empty or dot path segment) raises ``ValueError``.
+    """
 
 
 class OpenWAApiError(OpenWAError):
@@ -82,7 +86,9 @@ class OpenWAAuthError(OpenWAApiError):
 
 
 class OpenWAForbiddenError(OpenWAApiError):
-    """403 Forbidden: the API key's role or scope (session, IP or chat allow-list) refuses the call."""
+    """403 Forbidden: the API key's role or scope (session, IP or chat allow-list) refuses the call,
+    or WhatsApp itself refused the operation (for example, missing group admin rights).
+    """
 
 
 class OpenWANotFoundError(OpenWAApiError):
@@ -99,8 +105,11 @@ class OpenWARateLimitError(OpenWAApiError):
     The global rate limiter's 429 lifts when its window expires (seconds for the
     per-second tier, up to an hour for the hourly tier by default), and
     ``retry_after_seconds`` carries its Retry-After header. A 429 with code
-    "SEND_PACING_LIMITED" is not transient: do not retry it before
-    ``retry_after_seconds``, which then comes from the body and can be hours.
+    "SEND_PACING_LIMITED" is usually not transient: do not retry it before
+    ``retry_after_seconds``, which then comes from the body: a few seconds
+    when only sends still in flight caused it, the rest of the failure
+    breaker's cooldown (SEND_PACING_BREAKER_COOLDOWN_MS, 15 minutes by
+    default) after a run of send failures, otherwise up to the next UTC day.
     """
 
 
@@ -115,10 +124,12 @@ class OpenWAServiceUnavailableError(OpenWAApiError):
     replied, the socket was down, or the request budget ran out. Retryable, but a catalog 503 can
     persist because WhatsApp may never answer that query, so bound any retry. The non-idempotent
     sends are deliberately left unbounded by the gateway so a slow WhatsApp reply never answers
-    one, and in a multi-node deployment a forwarded request answers 503 only when the owner node
-    was never reached. A forward that fails after the request was sent answers 502 or 504 instead
-    (a plain OpenWAApiError): the owner may already have carried it out, so do not repeat a
-    non-idempotent send on those unchecked.
+    one, and in a multi-node deployment a forward that fails before reaching the owner node answers
+    503. A 503 from the owner itself is relayed unchanged and means the engine did not confirm, so a
+    bounded write (group, channel, contact or profile change) may still have been applied; re-read
+    the state before repeating it. A forward that fails after the request was sent answers 502 or
+    504 instead (a plain OpenWAApiError): the owner may already have carried it out, so do not
+    repeat a non-idempotent send on those unchecked.
     """
 
 

@@ -30,7 +30,8 @@
  *
  * What one comparison covers, per mapped pair: field-name sets in both directions, required vs
  * optional (hand `?` vs the schema's `required` array), and — for fields whose both sides reduce
- * to a simple token (primitive, enum literal set, array of those, null union) — the token itself,
+ * to a simple token (primitive, enum literal set, array of those, null union; on the hand side, any
+ * union too) — the token itself,
  * which is what catches `string` widened to `string | number` or a re-ordered enum growing a
  * member. Complex/nested fields are compared by presence and optionality only; that limit is
  * deliberate (the hand parser stays regular), and the exclusions below record what is known to be
@@ -44,8 +45,7 @@
  * under-describes reality, fix the backend DTO decorator, regenerate, and un-exclude).
  */
 
-import { readFileSync, readdirSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { readFileSync, readdirSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 // Resolve from the script's own location, not process.cwd() — same reason check-sdk-coverage.mjs
@@ -58,6 +58,7 @@ const MAPPINGS = {
   'sdk/javascript/src/types.ts': {
     AccountRestriction: 'AccountRestrictionDto',
     ArchiveChatRequest: 'ArchiveChatDto',
+    BatchCancelResponse: 'BatchCancelResponseDto',
     BatchMessageResult: 'BatchMessageResultDto',
     BatchProgress: 'BatchProgressDto',
     BatchStatusResponse: 'BatchStatusResponseDto',
@@ -86,6 +87,7 @@ const MAPPINGS = {
     GroupParticipant: 'GroupParticipantDto',
     GroupSubjectRequest: 'GroupSubjectDto',
     GroupSummary: 'GroupSummaryDto',
+    HealthReadyResponse: 'ReadinessResponseDto',
     JoinGroupRequest: 'JoinGroupDto',
     MarkChatReadRequest: 'MarkChatReadDto',
     MarkChatRequest: 'MarkChatUnreadDto',
@@ -143,6 +145,7 @@ const MAPPINGS = {
   'dashboard/src/services/api.ts': {
     AccountRestriction: 'AccountRestrictionDto',
     AuditLog: 'AuditLogDto',
+    BatchCancelResponse: 'BatchCancelResponseDto',
     BatchMessageResult: 'BatchMessageResultDto',
     BatchProgress: 'BatchProgressDto',
     BatchStatusResponse: 'BatchStatusResponseDto',
@@ -167,16 +170,16 @@ const MAPPINGS = {
 
 /**
  * Floor on the mapping SIZE per client. The per-file compared-pairs guard above cannot see a
- * rewrite that silently DROPS entries (protection shrinks while everything stays green — observed
- * in review: a from-memory rewrite lost four conforming pairs and the run still passed). Raising
- * these floors as pairs are added makes the shrink loud.
+ * rewrite that silently DROPS entries (protection shrinks while everything stays green: a rewrite
+ * once lost four conforming pairs and the run still passed). Raising these floors as pairs are
+ * added makes the shrink loud.
  */
 const MINIMUM_MAPPED = {
-  'sdk/javascript/src/types.ts': 83,
-  'dashboard/src/services/api.ts': 21,
-  'sdk/python/openwa/types.py': 79,
-  'sdk/go': 79,
-  'sdk/java': 83,
+  'sdk/javascript/src/types.ts': 85,
+  'dashboard/src/services/api.ts': 22,
+  'sdk/python/openwa/types.py': 81,
+  'sdk/go': 81,
+  'sdk/java': 85,
 };
 
 /** Known drift, deliberately not gated yet — each line is a to-adjudicate follow-up. */
@@ -187,7 +190,7 @@ const EXCLUDED = {
     WebhookResponse:
       'BY DESIGN: `WebhookEvent` is a type ALIAS for string so the Event* constants drop into a []string literal without a conversion, which means the events list resolves to array<string> and cannot carry the vocabulary. Un-excluding means making it a defined type and retyping the three Events fields, a source break for a published client',
     CreateWebhookRequest:
-      'BY DESIGN: `events` carries no omitempty so the key is always on the wire, which is what lets an empty slice mean "subscribe to nothing": the server keeps [] and only defaults when the key is absent. Adding omitempty would silently turn that into the default subscription',
+      'BY DESIGN: `events` carries no omitempty, so a nil slice is sent as null, which the server treats like an absent key (default ["message.received"]), and an empty slice is sent as [] and refused with 400 (ArrayMinSize(1)). Adding omitempty would silently turn that empty slice into the default subscription. The harvester reads the missing omitempty as a required field, which the optional DTO field does not match',
     UpdateSessionConfigRequest:
       'BY DESIGN: every component is `json:"-"` and MarshalJSON writes the body by hand, because the three fields need an explicit null to reset and Go cannot express "null" and "absent" through one pointer, so the harvester sees no wire fields at all',
     UpdateSessionProxyRequest:
@@ -214,6 +217,7 @@ const EXCLUDED = {
 const PYTHON_MAPPING = {
   AccountRestriction: 'AccountRestrictionDto',
   ArchiveChatRequest: 'ArchiveChatDto',
+  BatchCancelResponse: 'BatchCancelResponseDto',
   BatchMessageResult: 'BatchMessageResultDto',
   BatchProgress: 'BatchProgressDto',
   BatchStatusResponse: 'BatchStatusResponseDto',
@@ -240,6 +244,7 @@ const PYTHON_MAPPING = {
   GroupMembershipRequest: 'GroupMembershipRequestDto',
   GroupParticipant: 'GroupParticipantDto',
   GroupSummary: 'GroupSummaryDto',
+  HealthReadyResponse: 'ReadinessResponseDto',
   JoinGroupRequest: 'JoinGroupDto',
   MarkChatReadRequest: 'MarkChatReadDto',
   MarkChatRequest: 'MarkChatUnreadDto',
@@ -297,6 +302,7 @@ const PYTHON_MAPPING = {
 const GO_MAPPING = {
   AccountRestriction: 'AccountRestrictionDto',
   ArchiveChatRequest: 'ArchiveChatDto',
+  BatchCancelResponse: 'BatchCancelResponseDto',
   BatchMessageResult: 'BatchMessageResultDto',
   BatchProgress: 'BatchProgressDto',
   BatchStatusResponse: 'BatchStatusResponseDto',
@@ -322,6 +328,7 @@ const GO_MAPPING = {
   GroupMembershipRequest: 'GroupMembershipRequestDto',
   GroupParticipant: 'GroupParticipantDto',
   GroupSummary: 'GroupSummaryDto',
+  HealthReadyResponse: 'ReadinessResponseDto',
   JoinGroupRequest: 'JoinGroupDto',
   MarkChatReadRequest: 'MarkChatReadDto',
   MarkChatRequest: 'MarkChatUnreadDto',
@@ -380,6 +387,7 @@ const GO_MAPPING = {
 const JAVA_MAPPING = {
   AccountRestriction: 'AccountRestrictionDto',
   ArchiveChatRequest: 'ArchiveChatDto',
+  BatchCancelResponse: 'BatchCancelResponseDto',
   BatchMessageResult: 'BatchMessageResultDto',
   BatchProgress: 'BatchProgressDto',
   BatchStatusResponse: 'BatchStatusResponseDto',
@@ -408,6 +416,7 @@ const JAVA_MAPPING = {
   GroupParticipant: 'GroupParticipantDto',
   GroupSubjectRequest: 'GroupSubjectDto',
   GroupSummary: 'GroupSummaryDto',
+  HealthReadyResponse: 'ReadinessResponseDto',
   JoinGroupRequest: 'JoinGroupDto',
   MarkChatReadRequest: 'MarkChatReadDto',
   MarkChatRequest: 'MarkChatUnreadDto',
@@ -688,7 +697,8 @@ export function comparePair(handName, handMembers, schemaName, schema, schemas, 
         }
       }
       const absorbs = handInfo.absorbsNull && contract === `${hand}|null`;
-      if (hand !== contract && !absorbs && isSimpleToken(hand)) {
+      // A union never equals a simple contract token, so it is drift, not a shape too complex to read.
+      if (hand !== contract && !absorbs && (isSimpleToken(hand) || hand.startsWith('union('))) {
         diffs.push(`"${field}": hand ${hand}, contract ${contract}`);
       }
     }
@@ -1010,7 +1020,10 @@ export function parseJavaTypes(sources) {
           members.push(serialized[1]);
           continue;
         }
-        const bare = part.replace(/@\w+\([^)]*\)/g, '').trim().match(/^([A-Z][A-Z0-9_]*)$/);
+        const bare = part
+          .replace(/@\w+\([^)]*\)/g, '')
+          .trim()
+          .match(/^([A-Z][A-Z0-9_]*)$/);
         // A bare UNKNOWN is the client-side sentinel the SDK decodes an unrecognised token to, not
         // a wire member. An annotated @SerializedName("unknown") is a real member and counts above.
         if (bare && bare[1] !== 'UNKNOWN') members.push(bare[1]);
@@ -1079,9 +1092,9 @@ export function parseJavaTypes(sources) {
 
 // Resolved-path comparison, not a basename match: splitting on `/` finds no separator in a Windows
 // path so the whole native path became the "basename" and never matched, and a bare `endsWith` on a
-// basename would also fire for any other script sharing this file's name. Same comparison as
-// check-sdk-docs.mjs and check-upstream-surface.mjs.
-const isDirectRun = Boolean(process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url));
+// basename would also fire for any other script sharing this file's name. argv[1] is realpathed
+// because Node realpaths the main module's URL, so an unresolved path through a symlink never matched.
+const isDirectRun = Boolean(process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url));
 if (isDirectRun) {
   const openapi = JSON.parse(readFileSync(`${REPO_ROOT}openapi.json`, 'utf8'));
   const schemas = openapi.components.schemas;

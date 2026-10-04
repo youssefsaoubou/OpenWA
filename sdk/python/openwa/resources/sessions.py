@@ -51,9 +51,10 @@ class SessionsResource:
         return self._http.request("GET", f"/api/sessions/{quote_segment(session_id)}/config")
 
     def update_config(self, session_id: str, body: UpdateSessionConfigRequest) -> SessionConfig:
-        """Update a RUNNING session's configuration -- no re-link and no QR scan.
+        """Update a session's configuration, in any state, with no restart, re-link or QR scan.
 
-        All three fields were fixed at creation before this route existed.
+        All three fields were fixed at creation before this route existed. ``autoRejectCalls`` applies
+        immediately; ``maxReconnectAttempts`` and ``reconnectBaseDelay`` apply on the next start.
         """
         return self._http.request(
             "PATCH", f"/api/sessions/{quote_segment(session_id)}/config", body=body
@@ -119,7 +120,13 @@ class SessionsResource:
         return self._http.request("POST", f"/api/sessions/{quote_segment(session_id)}/logout")
 
     def force_kill(self, session_id: str) -> SessionResponse:
-        """Terminate a stuck session immediately."""
+        """Terminate a stuck session immediately.
+
+        Raises with HTTP 502 and ``code`` ``SESSION_FORCE_KILL_INCOMPLETE`` when the session was
+        stopped locally but the force-destroy threw or timed out, so the engine process may still be
+        running; the status is settled to disconnected and a retry answers 400 because no engine is
+        left to kill. Restart the node to reap a leaked process.
+        """
         return self._http.request("POST", f"/api/sessions/{quote_segment(session_id)}/force-kill")
 
     def get_qr_code(self, session_id: str) -> QrCodeResponse:

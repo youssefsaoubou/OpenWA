@@ -39,6 +39,31 @@ export function extractLinkedParentJID(groupMetadata?: GroupMetadataRaw): string
 }
 
 /**
+ * GroupChat.revokeInvite, run IN-PAGE with the refusal handling its siblings already have. Upstream's
+ * getInviteCode and the admin-only setters catch WA Web's `ServerStatusCodeError` (a non-admin
+ * refusal) and resolve nothing; revokeInvite alone lets it reject, so a refusal reached the caller as
+ * an opaque 500. Outside the page the error's name is no longer reliable (Puppeteer rebuilds it from
+ * the page's constructor name), so the check has to happen here.
+ */
+export async function revokeInviteInPage(chatId: string): Promise<string | undefined> {
+  const w = window as unknown as {
+    require: (m: string) => {
+      createWid: (id: string) => unknown;
+      resetGroupInviteCode: (wid: unknown) => Promise<{ code?: string } | undefined>;
+    };
+  };
+  try {
+    const res = await w
+      .require('WAWebGroupQueryJob')
+      .resetGroupInviteCode(w.require('WAWebWidFactory').createWid(chatId));
+    return res?.code;
+  } catch (err) {
+    if ((err as Error | undefined)?.name === 'ServerStatusCodeError') return undefined;
+    throw err;
+  }
+}
+
+/**
  * Group-domain operations extracted from WhatsAppWebJsAdapter. The adapter keeps the public
  * methods as thin forwarders and injects the shared host surface (./wwebjs-host) via closures,
  * so the delegate never touches lifecycle state directly.
@@ -128,15 +153,25 @@ export class WwebjsGroups {
           isSuperAdmin: Boolean(p.isSuperAdmin),
         }));
 
+      // GroupChat.createdAt is a getter returning a Date (GroupChat.js:36), which serialises as an
+      // ISO string; the contract is Unix seconds, so read the raw metadata field instead.
+      const creation = (groupChat.groupMetadata as { creation?: unknown } | undefined)?.creation;
+      // GroupChat has no isAnnounce, and WA Web overwrites isReadOnly with the announce SETTING
+      // (Injected/Utils.js:1005), which tells an admin of an announce-only group they cannot post.
+      // Derive both from the metadata, as the Baileys mapper does.
+      const announce = Boolean(groupChat.groupMetadata?.announce);
+      const selfWid = readWid(this.client().info?.wid);
+      const selfIsAdmin = participants.some(p => p.isAdmin && selfWid !== undefined && p.id === selfWid);
+
       return {
         id: chat.id._serialized,
         name: chat.name,
         description: groupChat.description ? String(groupChat.description) : undefined,
         owner: readWid(groupChat.owner),
-        createdAt: groupChat.createdAt,
+        createdAt: typeof creation === 'number' ? creation : undefined,
         participants,
-        isReadOnly: Boolean(groupChat.isReadOnly),
-        isAnnounce: Boolean(groupChat.isAnnounce),
+        isReadOnly: announce && !selfIsAdmin,
+        isAnnounce: announce,
         announce: groupChat.groupMetadata?.announce,
         locked: groupChat.groupMetadata?.restrict,
         ephemeralSeconds: groupChat.groupMetadata?.ephemeralDuration,
@@ -349,8 +384,13 @@ export class WwebjsGroups {
   }
 
   async revokeGroupInviteCode(groupId: string): Promise<string> {
-    const chat = await this.requireGroupChat(groupId, 'revokeGroupInviteCode');
-    const newCode = await reportPageDeath(this.host, 'revokeGroupInviteCode', () => chat.revokeInvite());
+    await this.requireGroupChat(groupId, 'revokeGroupInviteCode');
+    const page = (
+      this.client() as unknown as { pupPage: { evaluate: <T, A>(fn: (arg: A) => Promise<T>, arg: A) => Promise<T> } }
+    ).pupPage;
+    const newCode = await reportPageDeath(this.host, 'revokeGroupInviteCode', () =>
+      page.evaluate(revokeInviteInPage, groupId),
+    );
     if (!newCode) {
       throw new EngineRefusedError(`Failed to revoke the invite code for group ${groupId} — admin rights required`);
     }
@@ -593,7 +633,9 @@ export class WwebjsGroups {
     groupId: string,
     participants?: string[],
   ): Promise<ParticipantOperationResult[]> {
-    this.host.ensureReady();
+    // Resolved first, like the list above: the page reads the group's metadata without checking it
+    // exists, so an unknown or non-group id rejected there and answered 500 instead of 404.
+    await this.requireGroupChat(groupId, op);
     const options = {
       // Qualified like every other participant write in this file: the service blesses a bare phone
       // number, and the page maps requesterIds straight through `createWid` (Injected/Utils.js) —

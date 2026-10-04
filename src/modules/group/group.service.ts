@@ -8,6 +8,23 @@ import { SetGroupPictureDto } from './dto/group.dto';
 import { paginate, ListOptions } from '../../common/utils/paginate';
 import { SendPacingService } from '../message/send-pacing.service';
 import { createLogger } from '../../common/services/logger.service';
+import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
+import { EngineThrottledError } from '../../common/errors/engine-throttled.error';
+
+/**
+ * Whether a failed paced write provably contacted nobody, so its reserved budget can go back: a
+ * client or refusal status (400 bad input, 403 refused, 404 no such group, 409 not ready), a 501
+ * for an operation the engine lacks, or a 503 WhatsApp rate limit (EngineThrottledError), which
+ * WhatsApp turned away before it ran. Anything else (a 503 deadline that abandoned an IQ still in
+ * flight, a dropped socket, a dead page) leaves the outcome unknown, and WhatsApp may already have
+ * added the participants, so the batch stays charged.
+ */
+function contactedNobody(error: unknown): boolean {
+  return (
+    error instanceof HttpException &&
+    (error.getStatus() < 500 || error instanceof EngineNotSupportedError || error instanceof EngineThrottledError)
+  );
+}
 
 /**
  * Owns engine access for group operations. Controllers depend on this service instead of
@@ -74,8 +91,9 @@ export class GroupService {
     try {
       return await this.getEngine(sessionId).createGroup(name, participants);
     } catch (error) {
-      // Nobody was invited, so the reserved budget goes back (whatsapp-web.js always 501s here).
-      this.pacing.refundGroupReachouts(sessionId, reservation);
+      // A refusal invited nobody, so the reserved budget goes back (whatsapp-web.js always 501s here).
+      // An outcome-unknown failure stays charged.
+      if (contactedNobody(error)) this.pacing.refundGroupReachouts(sessionId, reservation);
       throw error;
     }
   }
@@ -92,8 +110,8 @@ export class GroupService {
       return await this.getEngine(sessionId).addParticipants(groupId, participants);
     } catch (error) {
       // A refused add contacted nobody. Per-participant failures an engine reports without throwing
-      // stay charged: the batch was attempted.
-      this.pacing.refundGroupReachouts(sessionId, reservation);
+      // stay charged: the batch was attempted. So does an outcome-unknown failure.
+      if (contactedNobody(error)) this.pacing.refundGroupReachouts(sessionId, reservation);
       throw error;
     }
   }
@@ -160,14 +178,22 @@ export class GroupService {
    * client error it is.
    */
   getGroupJoinInfo(sessionId: string, inviteCode: string) {
-    if (!inviteCode?.trim()) {
-      throw new BadRequestException('An invite code is required');
-    }
-    return this.getEngine(sessionId).getGroupJoinInfo(inviteCode.trim());
+    const code = this.requireInviteCode(inviteCode);
+    return this.getEngine(sessionId).getGroupJoinInfo(code);
   }
 
+  /** Same rule as the preview, so a code that previews also joins. */
   joinGroupViaInviteCode(sessionId: string, inviteCode: string) {
-    return this.getEngine(sessionId).joinGroupViaInviteCode(inviteCode);
+    const code = this.requireInviteCode(inviteCode);
+    return this.getEngine(sessionId).joinGroupViaInviteCode(code);
+  }
+
+  private requireInviteCode(inviteCode: string): string {
+    const code = inviteCode?.trim();
+    if (!code) {
+      throw new BadRequestException('An invite code is required');
+    }
+    return code;
   }
 
   /**

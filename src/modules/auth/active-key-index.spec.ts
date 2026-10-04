@@ -68,6 +68,13 @@ describe('ActiveKeyIndex', () => {
     expect(index.recognise({ 'x-api-key': 'fenced' }, '10.1.2.3')).toBe(sha('fenced'));
   });
 
+  it('treats a stored expiry that reads back as an invalid date as expired, as validateApiKey does', async () => {
+    const { index } = indexOver([row('garbled', { expiresAt: new Date('2020-W01-1') })]);
+    await index.onApplicationBootstrap();
+    index.onModuleDestroy();
+    expect(index.recognise({ 'x-api-key': 'garbled' }, '192.0.2.1')).toBeUndefined();
+  });
+
   it('keeps the previous view when a refresh fails', async () => {
     let fail = false;
     const { index } = indexOver(() => (fail ? Promise.reject(new Error('db down')) : Promise.resolve([row('k1')])));
@@ -97,6 +104,28 @@ describe('ActiveKeyIndex', () => {
     index.onModuleDestroy();
     index.refreshSoon();
     expect(find).toHaveBeenCalledTimes(3);
+  });
+
+  it('never drops a refresh requested as the running load finishes', async () => {
+    // A write's continuation can run in any microtask around the end of the running load; each
+    // depth must still get the load after the one in flight.
+    for (let depth = 0; depth < 8; depth++) {
+      let calls = 0;
+      const { index, find } = indexOver(() => {
+        calls++;
+        if (calls === 2) {
+          let hop: Promise<void> = Promise.resolve();
+          for (let i = 0; i < depth; i++) hop = hop.then(() => undefined);
+          void hop.then(() => index.refreshSoon());
+        }
+        return Promise.resolve([row('k1')]);
+      });
+      await index.onApplicationBootstrap();
+      index.refreshSoon();
+      await new Promise(resolve => setImmediate(resolve));
+      index.onModuleDestroy();
+      expect({ depth, loads: find.mock.calls.length }).toEqual({ depth, loads: 3 });
+    }
   });
 
   it('refreshes on an interval until destroyed', async () => {
