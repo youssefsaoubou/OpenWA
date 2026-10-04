@@ -20847,14 +20847,6 @@
             "type": "string",
             "nullable": true
           },
-          "createdAt": {
-            "format": "date-time",
-            "type": "string"
-          },
-          "updatedAt": {
-            "format": "date-time",
-            "type": "string"
-          },
           "type": {
             "type": "string",
             "enum": [
@@ -20865,6 +20857,14 @@
           "mediaUrl": {
             "type": "string",
             "nullable": true
+          },
+          "createdAt": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "updatedAt": {
+            "format": "date-time",
+            "type": "string"
           }
         },
         "required": [
