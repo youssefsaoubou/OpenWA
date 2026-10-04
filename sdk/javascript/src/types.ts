@@ -1264,6 +1264,8 @@ export interface CreateTemplateRequest {
   body: string;
   header?: string;
   footer?: string;
+  type?: 'text' | 'image';
+  mediaUrl?: string;
 }
 
 export type UpdateTemplateRequest = Partial<CreateTemplateRequest>;
