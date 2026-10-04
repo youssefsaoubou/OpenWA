@@ -1,11 +1,13 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { IsString, IsNotEmpty, IsOptional, MaxLength, ValidateIf } from 'class-validator';
+import { IsString, IsNotEmpty, IsOptional, MaxLength, ValidateIf, IsIn } from 'class-validator';
 import { MaxCodePoints } from '../../../common/validation/max-code-points';
 import { NoNulCharacter } from '../../../common/validation/no-nul-character';
 
 const NAME_MAX_LENGTH = 100;
 const BODY_MAX_LENGTH = 4096;
 const HEADER_FOOTER_MAX_LENGTH = 1024;
+const MEDIA_URL_MAX_LENGTH = 4096;
+export const TEMPLATE_TYPES = ['text', 'image'] as const;
 
 export class CreateTemplateDto {
   @ApiProperty({
@@ -51,6 +53,24 @@ export class CreateTemplateDto {
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
   @NoNulCharacter()
   footer?: string;
+
+  @ApiPropertyOptional({ description: 'Template message type', enum: TEMPLATE_TYPES, default: 'text' })
+  @IsOptional()
+  @IsString()
+  @IsIn(TEMPLATE_TYPES)
+  type?: 'text' | 'image';
+
+  @ApiPropertyOptional({
+    description: 'Image URL for image templates. Supports {{variable}} placeholders.',
+    example: '{{imageUrl}}',
+    maxLength: MEDIA_URL_MAX_LENGTH,
+  })
+  @ValidateIf((o: CreateTemplateDto) => o.type === 'image' || o.mediaUrl !== undefined)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(MEDIA_URL_MAX_LENGTH)
+  @NoNulCharacter()
+  mediaUrl?: string;
 }
 
 export class UpdateTemplateDto {
@@ -71,19 +91,48 @@ export class UpdateTemplateDto {
   @NoNulCharacter()
   body?: string;
 
-  @ApiPropertyOptional({ description: 'Optional header text', maxLength: HEADER_FOOTER_MAX_LENGTH })
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Optional header text',
+    maxLength: HEADER_FOOTER_MAX_LENGTH,
+    nullable: true,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
   @NoNulCharacter()
-  header?: string;
+  header?: string | null;
 
-  @ApiPropertyOptional({ description: 'Optional footer text', maxLength: HEADER_FOOTER_MAX_LENGTH })
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Optional footer text',
+    maxLength: HEADER_FOOTER_MAX_LENGTH,
+    nullable: true,
+  })
   @IsOptional()
   @IsString()
   @MaxLength(HEADER_FOOTER_MAX_LENGTH)
   @NoNulCharacter()
-  footer?: string;
+  footer?: string | null;
+
+  @ApiPropertyOptional({ description: 'Template message type', enum: TEMPLATE_TYPES })
+  @ValidateIf((o: UpdateTemplateDto) => o.type !== undefined)
+  @IsString()
+  @IsIn(TEMPLATE_TYPES)
+  type?: 'text' | 'image';
+
+  @ApiPropertyOptional({
+    type: String,
+    description: 'Image URL for image templates. Supports {{variable}} placeholders.',
+    maxLength: MEDIA_URL_MAX_LENGTH,
+    nullable: true,
+  })
+  @ValidateIf((o: UpdateTemplateDto) => o.mediaUrl !== undefined && o.mediaUrl !== null)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(MEDIA_URL_MAX_LENGTH)
+  @NoNulCharacter()
+  mediaUrl?: string | null;
 }
 
 export class TemplateResponseDto {
@@ -104,6 +153,12 @@ export class TemplateResponseDto {
 
   @ApiPropertyOptional({ type: String, nullable: true })
   footer?: string | null;
+
+  @ApiProperty({ enum: TEMPLATE_TYPES })
+  type!: 'text' | 'image';
+
+  @ApiPropertyOptional({ type: String, nullable: true })
+  mediaUrl?: string | null;
 
   @ApiProperty()
   createdAt!: Date;
