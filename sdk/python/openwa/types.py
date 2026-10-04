@@ -1274,6 +1274,8 @@ class CreateTemplateRequest(TypedDict):
     body: str
     header: NotRequired[str]
     footer: NotRequired[str]
+    type: NotRequired[Literal["text", "image"]]
+    mediaUrl: NotRequired[str]
 
 
 class UpdateTemplateRequest(TypedDict, total=False):
