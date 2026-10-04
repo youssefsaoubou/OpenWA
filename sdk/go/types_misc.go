@@ -58,12 +58,12 @@ const (
 
 // CreateTemplateRequest creates a template. Name and Body required.
 type CreateTemplateRequest struct {
-	Name     string `json:"name"`
-	Body     string `json:"body"`
-	Header   string `json:"header,omitempty"`
-	Footer   string `json:"footer,omitempty"`
+	Name     string       `json:"name"`
+	Body     string       `json:"body"`
+	Header   string       `json:"header,omitempty"`
+	Footer   string       `json:"footer,omitempty"`
 	Type     TemplateType `json:"type,omitempty"`
-	MediaURL string `json:"mediaUrl,omitempty"`
+	MediaURL string       `json:"mediaUrl,omitempty"`
 }
 
 // UpdateTemplateRequest updates a template; all fields optional.
