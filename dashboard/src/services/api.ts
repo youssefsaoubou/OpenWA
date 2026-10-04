@@ -3,6 +3,7 @@
 
 import { warnIfInsecureHttpUrl } from '../utils/urlSecurity';
 import { isKeyUnusable } from '../utils/authLifecycle';
+import { fetchAllPages } from '../utils/fetchAllPages';
 
 // Resolve the API base URL. By default this is the same-origin relative path '/api',
 // correct when the dashboard and API are served from the same origin (the default
@@ -75,8 +76,10 @@ export interface Session {
   lastActive?: string | null;
   createdAt: string;
   updatedAt: string;
-  /** Human-readable reason carried while the status is 'failed' (terminal failure) or
-   * 'action_required' (operator must intervene, e.g. acknowledge an onboarding modal). */
+  /** Human-readable reason carried while the status is 'failed' (terminal failure),
+   * 'action_required' (operator must intervene, e.g. acknowledge an onboarding modal), or
+   * 'initializing' during an engine-internal reconnect (from the fifth consecutive attempt, or while a
+   * retry waits after a failed relaunch). */
   lastError?: string | null;
   /**
    * A limit WhatsApp itself has placed on the account, or null when there is none. Distinct from
@@ -182,8 +185,6 @@ export interface MessageTemplate {
   body: string;
   header?: string | null;
   footer?: string | null;
-  type: 'text' | 'image';
-  mediaUrl?: string | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -193,8 +194,6 @@ export interface TemplatePayload {
   body: string;
   header?: string | null;
   footer?: string | null;
-  type?: 'text' | 'image';
-  mediaUrl?: string | null;
 }
 
 export interface ApiKey {
@@ -539,7 +538,7 @@ export interface BatchMessageResult {
   sentAt?: string;
 }
 
-/** GET batch/:batchId shape; the cancel endpoint returns the same minus results/timestamps. */
+/** GET batch/:batchId shape. */
 export interface BatchStatusResponse {
   batchId: string;
   status: BatchStatus;
@@ -548,6 +547,13 @@ export interface BatchStatusResponse {
   results: BatchMessageResult[];
   startedAt?: string | null;
   completedAt?: string | null;
+}
+
+/** POST batch/:batchId/cancel shape: the batch state without per-recipient results or timestamps. */
+export interface BatchCancelResponse {
+  batchId: string;
+  status: BatchStatus;
+  progress: BatchProgress;
 }
 
 export interface HealthStatus {
@@ -724,8 +730,8 @@ export interface SearchResults {
 // Error carrying the HTTP status and, when the gateway supplied one, its machine code.
 async function handleErrorResponse<T>(response: Response): Promise<T> {
   // On a non-JSON body (e.g. a reverse-proxy 502/503/504 HTML page) fall through to `HTTP <status>`
-  // rather than statusText: the status code is what the toast connection-lost de-dup matches on,
-  // and statusText is empty over HTTP/2 anyway.
+  // rather than statusText: the toast folds an exact `HTTP 502`/`HTTP 503` into its connection-lost
+  // toast (a 504 keeps its own), and statusText is empty over HTTP/2 anyway.
   const error = await response.json().catch(() => ({}));
   if (isKeyUnusable(response.status, error.message)) {
     sessionStorage.removeItem('openwa_api_key');
@@ -972,7 +978,28 @@ export interface ProfilePictureResponse {
 }
 
 export const contactApi = {
-  list: (sessionId: string) => request<Contact[]>(`/sessions/${sessionId}/contacts`),
+  // The route caps a response at 1000 contacts; walk the pages so an address book past that is complete.
+  // No item cap: the status recipient picker needs every contact, and the server's short page ends the walk.
+  list: async (sessionId: string) => {
+    let lastError: unknown;
+    const { items, throttled } = await fetchAllPages(
+      async (limit, offset) => {
+        try {
+          const data = await request<Contact[]>(`/sessions/${sessionId}/contacts?limit=${limit}&offset=${offset}`);
+          // The route answers a bare array with no total: a short page is the last one.
+          return { data, total: data.length < limit ? offset + data.length : Infinity };
+        } catch (err) {
+          lastError = err;
+          throw err;
+        }
+      },
+      { pageSize: 1000, maxItems: Infinity },
+    );
+    // A page still throttled after the retries would leave the picker silently short; fail the whole
+    // load with that page's 429, as a throttled first page already does.
+    if (throttled) throw lastError;
+    return items;
+  },
   checkNumber: (sessionId: string, number: string) =>
     request<CheckNumberResponse>(`/sessions/${sessionId}/contacts/check/${encodeURIComponent(number)}`),
   // Returns the contact/group profile picture URL. Both engines return null when the user hid their
@@ -987,7 +1014,7 @@ export const contactApi = {
       `/sessions/${sessionId}/contacts/${encodeURIComponent(contactId)}/phone`,
     ),
   // Batch-resolve profile picture URLs for a whole sidebar in ONE request — the per-chat burst of
-  // parallel single fetches exhausts the per-IP throttle (429s). Engine lookups run 3 at a time
+  // parallel single fetches exhausts the per-IP throttle (429s). Engine lookups run 5 at a time
   // server-side; ids beyond the backend's 50-id cap are dropped client-side too.
   profilePictures: (sessionId: string, contactIds: string[]) =>
     request<{ pictures: Record<string, string | null> }>(
@@ -1107,7 +1134,7 @@ export const messageApi = {
   getBatchStatus: (sessionId: string, batchId: string) =>
     request<BatchStatusResponse>(`/sessions/${sessionId}/messages/batch/${encodeURIComponent(batchId)}`),
   cancelBatch: (sessionId: string, batchId: string) =>
-    request<BatchStatusResponse>(`/sessions/${sessionId}/messages/batch/${encodeURIComponent(batchId)}/cancel`, {
+    request<BatchCancelResponse>(`/sessions/${sessionId}/messages/batch/${encodeURIComponent(batchId)}/cancel`, {
       method: 'POST',
     }),
   reply: (sessionId: string, data: { chatId: string; quotedMessageId: string; text: string }) =>
