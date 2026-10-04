@@ -592,6 +592,7 @@ export class MessageController {
     description: 'Chat history (most recent messages, oldest first)',
     type: [ChatHistoryMessageDto],
   })
+  @ApiResponse({ status: 400, description: 'Session not active' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
   @ApiResponse({
@@ -637,6 +638,7 @@ export class MessageController {
     description: 'List of reactions with senders',
     type: [MessageReactionDto],
   })
+  @ApiResponse({ status: 400, description: 'Session not active' })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
   @ApiResponse({ status: 404, description: MESSAGE_NOT_FOUND_404 })
   @ApiResponse({ status: 501, description: ENGINE_NOT_SUPPORTED_501 })
@@ -891,6 +893,10 @@ export class MessageController {
     description: 'Session not active or invalid request',
   })
   @ApiResponse({ status: 413, description: BULK_MEDIA_TOO_LARGE_413 })
+  @ApiResponse({
+    status: 429,
+    description: 'Too many bulk batches in progress on this node (BULK_MAX_CONCURRENT_BATCHES); retry shortly',
+  })
   async sendBulk(
     @Param('sessionId') sessionId: string,
     @Body() dto: SendBulkMessageDto,

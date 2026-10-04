@@ -19,6 +19,11 @@ export interface IngressRequest {
   headers: Record<string, string>; // lower-cased keys
   query: Record<string, string>;
   rawBody: string;
+  /**
+   * A body arrived in a content type no parser captured (only JSON and form bodies are), so `rawBody`
+   * is empty rather than the bytes that were sent.
+   */
+  unparsedBody?: boolean;
 }
 
 export interface ResolvedInstance {
@@ -44,7 +49,13 @@ export interface IngressDeps {
       pluginId: string;
       providerDeliveryId: string;
       route: string;
-      payload: { headers: Record<string, string>; query: Record<string, string>; body: string; rawBody: string };
+      payload: {
+        headers: Record<string, string>;
+        query: Record<string, string>;
+        body: string;
+        rawBody: string;
+        method?: string;
+      };
       payloadHash: string;
       sessionId: string | null;
     }): Promise<boolean>;
@@ -113,6 +124,11 @@ export class IngressService {
       }
       return { status: 403, body: 'challenge failed' };
     }
+
+    // Handled as the empty body, it would pass a scheme that signs only a header, and every such delivery
+    // would hash to one dedup key: the first stored without its body, the rest acked and dropped. It
+    // would also slip past the size cap below.
+    if (req.unparsedBody) return { status: 415, body: 'unsupported ingress content type' };
 
     // `n > undefined` is always false, so a manifest that omits maxBodyBytes — or carries a
     // non-numeric or non-positive value — left this check inert: the 413 the published contract
@@ -227,7 +243,8 @@ export class IngressService {
       pluginId: req.pluginId,
       providerDeliveryId: deliveryId,
       route: req.route,
-      payload,
+      // The method rides with the row so a reconciler replay reaches the handler as this attempt does.
+      payload: { ...payload, method: req.method },
       // The slim content fingerprint kept after the payload is retired on dispatch (see the entity).
       payloadHash: createHash('sha256').update(req.rawBody).digest('hex'),
       sessionId: instance.sessionScope,

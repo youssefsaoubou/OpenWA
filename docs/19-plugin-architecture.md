@@ -17,15 +17,15 @@
 | **Dashboard UI**         | ✅ Implemented | `dashboard/src/pages/Plugins.tsx`                                  |
 | **REST API**             | ✅ Implemented | `src/modules/plugins/plugins.controller.ts`                        |
 
-| Component                    | Status         | Notes                                                                                                                             |
-| ---------------------------- | -------------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| **Sandboxed execution**      | ✅ Implemented | User-installed (disk-loaded) plugins run in a `worker_thread`; see [30 — Plugin Sandboxing](./30-plugin-sandboxing.md). No `vm2`. |
-| **Permission enforcement**   | ✅ Implemented | Capability permissions enforced at the call boundary via `assertPermission`                                                       |
-| **Per-session activation**   | ✅ Implemented | A session-scoped plugin runs only for the sessions an operator activated it for                                                   |
-| **Per-session config**       | ✅ Implemented | Per-session config overrides shallow-merged over the base config at hook time                                                     |
-| **Built-in plugins**         | ✅ Implemented | The two engine adapters (`whatsapp-web.js`, `baileys`) register as in-process built-ins                                           |
-| **Plugin install / catalog** | ✅ Implemented | Install a `.zip` by upload or URL, or from the remote catalog                                                                     |
-| **@openwa/plugin-sdk**       | 🔜 Planned     | NPM package not yet published; plugins implement `IPlugin` directly today                                                         |
+| Component                    | Status         | Notes                                                                                                                                    |
+| ---------------------------- | -------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Sandboxed execution**      | ✅ Implemented | User-installed (disk-loaded) plugins run in a `worker_thread`; see [30 — Plugin Sandboxing](./30-plugin-sandboxing.md). No `vm2`.        |
+| **Permission enforcement**   | ✅ Implemented | Capability permissions enforced at the call boundary via `assertPermission`                                                              |
+| **Per-session activation**   | ✅ Implemented | A session-scoped plugin runs only for the sessions an operator activated it for                                                          |
+| **Per-session config**       | ✅ Implemented | Per-session config overrides deep-merged over the base config at hook time (nested objects merge key by key; arrays and scalars replace) |
+| **Built-in plugins**         | ✅ Implemented | The two engine adapters (`whatsapp-web.js`, `baileys`) register as in-process built-ins                                                  |
+| **Plugin install / catalog** | ✅ Implemented | Install a `.zip` by upload or URL, or from the remote catalog                                                                            |
+| **@openwa/plugin-sdk**       | 🔜 Planned     | NPM package not yet published; plugins implement `IPlugin` directly today                                                                |
 
 ---
 
@@ -164,7 +164,7 @@ row), and the SDK major by the check applied to a manifest that declares `ingres
 | `sessions`              | —        | Session ids this plugin may act on, or `['*']`. Absent = `['*']`. Static — editing config can't widen it                                                                                                                                                                                             |
 | `sessionScoped`         | —        | Default `true`. A scoped plugin only sees events for the sessions it's activated for; `false` = always runs                                                                                                                                                                                          |
 | `net.allow`             | —        | Outbound-HTTP host allowlist for `ctx.net.fetch` (`host`, `host:port`, or `'*'`). Absent = deny all, unless `net.allowConfigHosts` admits a host                                                                                                                                                     |
-| `net.allowConfigHosts`  | —        | Config keys holding an https URL; each URL's host is admitted at fetch time on top of `net.allow`, so an adapter can reach an operator-configured host without `net.allow: ['*']`. Credentialed or non-https values are ignored, and the SSRF guard still applies                                    |
+| `net.allowConfigHosts`  | —        | Config keys holding an https URL; each URL's https origin (scheme, host and port) is admitted at fetch time on top of `net.allow`, so an adapter can reach an operator-configured host without `net.allow: ['*']`. Credentialed or non-https values are ignored, and the SSRF guard still applies    |
 | `sdkVersion`            | —        | Integration SDK `major` (or `major.minor`) the plugin was authored against. Absent = `'1'`. Only enforced for a manifest declaring `ingress`: a major other than `1` is refused at load                                                                                                              |
 | `minOpenWAVersion`      | -        | Oldest OpenWA release the plugin runs on (`MAJOR.MINOR.PATCH`). Install answers 400 and boot load fails when the running host is older; a malformed value is rejected. Absent or `null` = no floor                                                                                                   |
 | `ingress`               | —        | Inbound webhook routes this plugin claims (requires the `webhook:ingress` permission). Validated at load — route uniqueness, signature scheme, ack contract; see [25 — Integration Fabric](./25-integration-fabric.md)                                                                               |
@@ -186,9 +186,11 @@ it has an opaque origin and no access to the dashboard. It talks to the host by 
 
 `theme` matters because an opaque-origin iframe cannot read the dashboard's theme for itself; without it
 an editor can only guess, and a light-only editor becomes a glaring white panel inside a dark modal. It is
-sent once, with the handshake — the theme control sits behind the modal overlay, so the theme cannot
-change while an editor is open. Treat it as optional: an editor that ignores it still works, and one that
-uses it should fall back to `prefers-color-scheme` so it stays readable on an older host.
+sent once, with the handshake — the theme control sits behind the modal overlay, so an explicit Light or
+Dark choice cannot change while an editor is open. With the System theme, though, an OS color-scheme change
+is not forwarded, so an editor that wants to follow it should also listen to `prefers-color-scheme` inside
+the frame. Treat it as optional: an editor that ignores it still works, and one that uses it should fall
+back to `prefers-color-scheme` so it stays readable on an older host.
 
 `locale` is the dashboard's language code (`'es'`, `'zh-CN'`, ...), sent for the same reason: the iframe
 cannot read the operator's language setting, and `navigator.language` differs from it whenever the
@@ -321,7 +323,7 @@ claims a route the manifest already declared under `ingress`: the host owns the 
 ### Capability facade
 
 A plugin reaches WhatsApp, the engine, and the network **only** through these namespaces. Each call is
-gated by the matching declared permission (and, for everything except `net`, the session scope) — a
+gated by the matching declared permission (and, for everything except `net` and `storage`, the session scope) — a
 missing grant throws a `PluginCapabilityError`.
 
 ```typescript
@@ -346,7 +348,7 @@ export interface PluginEngineReadCapability {
 }
 
 // ctx.net — requires 'net:fetch'. Always through the host SSRF guard, scoped to the effective host
-// allowlist (manifest net.allow + the hosts of the net.allowConfigHosts config keys).
+// allowlist (manifest net.allow + the https origins of the net.allowConfigHosts config keys).
 export interface PluginNetCapability {
   fetch(url: string, init?: PluginNetRequestInit): Promise<PluginNetResponse>;
 }
@@ -525,23 +527,25 @@ The gateway still stores and emits each chat's messages in arrival order: the `m
 the start of webhook dispatch wait for every earlier message of the same chat. A slow handler therefore
 delays that chat's later messages, by at most its 5 s hook timeout (`SANDBOX_HOOK_TIMEOUT_MS`) for a
 sandboxed plugin. Webhook dispatch itself is not ordered: its queue jobs and HTTP deliveries run
-concurrently, so a receiver that needs order should sort by the message's `data.timestamp`.
+concurrently, so a receiver that needs order should sort by the message's `data.timestamp`. That value is
+whole seconds from WhatsApp, so messages sent within the same second cannot be put back in order.
 
 ## 19.6 Plugin Loader
 
 `PluginLoaderService` (`src/core/plugins/plugin-loader.service.ts`) is the NestJS provider that
 discovers, loads, and runs plugins.
 
-**Discovery & load.** On `onModuleInit` it registers built-in plugins programmatically (the engine
-adapters; see §19.7), then scans the plugins directory (`plugins.dir`, default `<dataDir>/plugins` — the same tree the
+**Discovery & load.** On `onModuleInit` it scans the plugins directory (`plugins.dir`, default `<dataDir>/plugins` — the same tree the
 registry and each plugin's `ctx.storage` live in, so code and persisted state stay together on one
-volume; `PLUGINS_DIR` overrides it). For each
+volume; `PLUGINS_DIR` overrides it). The engine built-ins are not registered here: `EngineFactory`
+registers them in its own `onModuleInit` through `registerBuiltInPlugin` (see §19.7). For each
 sub-directory with a `manifest.json` it reads the manifest, validates the required fields
 (`id`/`name`/`version`/`type`/`main`), and records an `INSTALLED` plugin plus a persisted registry
 entry — **without running any plugin code**. Persisted config and per-session activation/config are
 read back so an operator's choices survive a restart. There are two version gates. The manifest
-validator refuses a plugin whose `minOpenWAVersion` is newer than the running OpenWA (the plugin goes
-to `ERROR` with its config kept, and loads again after a host upgrade), and `validateIngressManifest`
+validator refuses a plugin whose `minOpenWAVersion` is newer than the running OpenWA (at boot the
+plugin is skipped and logged as `plugin_load_failed`, it does not appear in `GET /plugins`, and
+its config is kept so it loads again after a host upgrade), and `validateIngressManifest`
 refuses a manifest declaring `ingress` whose `sdkVersion` major is not the supported Integration SDK
 major (`1`).
 
@@ -687,7 +691,8 @@ URL / catalog), not an npm/github source descriptor.
 > and `X-Content-Type-Options: nosniff`. The dashboard fetches it **with** the API key and injects the
 > body as an iframe `srcdoc` (opaque origin), applying the current document's CSP nonce to inline scripts;
 > the editor exchanges config over a `postMessage` bridge, so the API key never reaches the iframe. If
-> the bridge does not initialize, the dashboard shows an error and keeps a declared `configSchema` form usable.
+> the bridge does not initialize within 5 s, the dashboard shows an error; the generated `configSchema`
+> form is not rendered as a fallback.
 
 ## 19.9 Plugin Security
 
@@ -755,7 +760,7 @@ first `ctx.registerSearchProvider` call.
 
 Two further checks apply on top of the permission:
 
-- **Session scope.** Every capability but `net` is session-scoped through `assertSessionActive`, which
+- **Session scope.** Every capability but `net` and `storage` is session-scoped through `assertSessionActive`, which
   requires **both** that the manifest `sessions` list admits the session (`assertSessionAllowed`; `['*']` =
   all) and that the operator has activated the plugin for it. Most verbs run it up front, on the
   `sessionId` the plugin passed; `ctx.mappings.getByProvider` takes no `sessionId`, so it runs the check
@@ -763,7 +768,7 @@ Two further checks apply on top of the permission:
   way an out-of-scope session is never reachable. The `sessionId` comes from the plugin, so this is the
   security boundary; the manifest half is static (editing config can't widen it).
 - **Network allowlist.** `ctx.net.fetch` additionally requires the target host to be on the plugin's
-  **effective** allowlist: `manifest.net.allow` plus the host of every `net.allowConfigHosts` config key
+  **effective** allowlist: `manifest.net.allow` plus the https origin of every `net.allowConfigHosts` config key
   that resolves to an https URL, taken across the base config **and** every per-session override. A host
   admitted only through `allowConfigHosts` is therefore allowed while absent from `net.allow`. The request
   always passes through the SSRF guard (which blocks internal IPs even for an allowlisted host).

@@ -41,7 +41,8 @@ COPY scripts/postinstall.js ./scripts/
 # Coolify (and similar PaaS) promote every ${VAR} referenced in the compose file to a build-time
 # variable, so docker-compose.yml's `NODE_ENV=${NODE_ENV:-production}` leaks NODE_ENV=production
 # into this stage and a bare `npm ci` would skip @nestjs/cli → `sh: 1: nest: not found` (exit 127).
-# (docker-compose.dev.yml hardcodes NODE_ENV=development, which is why the dev build never hit this.)
+# (docker-compose.dev.yml forwards `NODE_ENV=${NODE_ENV:-development}`, so the dev build only sees
+# production when the host sets it.)
 # This stage only builds dist/ and the dashboard SPA and never launches a browser; the production
 # stage downloads Chrome explicitly. Skip the Puppeteer postinstall download so @puppeteer/browsers 3
 # does not try to extract a zip here, where no archiver is installed.
@@ -170,8 +171,9 @@ http://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.l
     && apt-get update && apt-get install -y --no-install-recommends postgresql-client-17 \
     && rm -rf /var/lib/apt/lists/*
 
-# Set Puppeteer to skip automatic download during npm install (we download it explicitly below)
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+# Keep puppeteer's postinstall from downloading a browser (the --ignore-scripts install below
+# already skips it; amd64 downloads its pinned build explicitly further down)
+ENV PUPPETEER_SKIP_DOWNLOAD=true
 
 # Create app user for security. The ids are pinned (997 is what `-r` assigned on both arches) so a
 # Kubernetes runAsUser/fsGroup or a `docker run --user` can name the runtime user; the root start
@@ -189,7 +191,7 @@ COPY package*.json ./
 # scripts/postinstall.js rides along so a bare local `npm ci` keeps working, but the
 # --ignore-scripts install below skips the hook here: the explicit fatal run right
 # after is the sole (and stricter) applier for the image.
-COPY scripts/postinstall.js scripts/patch-wwebjs-201832.js scripts/wwebjs-201832.patch scripts/patch-wwebjs-newsletter-preview.js scripts/patch-wwebjs-status.js scripts/patch-wwebjs-ready-sync.js scripts/patch-wwebjs-participant-arity.js scripts/patch-wwebjs-block.js scripts/patch-wwebjs-group-description.js scripts/patch-wwebjs-media-id.js scripts/patch-wwebjs-send-error.js scripts/patch-baileys-appstate.js scripts/patch-baileys-newsletter-create.js ./scripts/
+COPY scripts/postinstall.js scripts/patch-wwebjs-201832.js scripts/wwebjs-201832.patch scripts/patch-wwebjs-newsletter-preview.js scripts/patch-wwebjs-status.js scripts/patch-wwebjs-ready-sync.js scripts/patch-wwebjs-participant-arity.js scripts/patch-wwebjs-block.js scripts/patch-wwebjs-group-description.js scripts/patch-wwebjs-media-id.js scripts/patch-wwebjs-send-error.js scripts/patch-wwebjs-download-mimetype.js scripts/patch-baileys-appstate.js scripts/patch-baileys-newsletter-create.js ./scripts/
 
 # Install production dependencies only, then apply the backports. The status patcher runs after
 # the two patchers it depends on: its transforms were written against the tree they leave behind.
@@ -217,20 +219,21 @@ RUN npm ci --omit=dev --ignore-scripts \
     && node scripts/patch-wwebjs-group-description.js \
     && node scripts/patch-wwebjs-media-id.js \
     && node scripts/patch-wwebjs-send-error.js \
+    && node scripts/patch-wwebjs-download-mimetype.js \
     && node scripts/patch-baileys-appstate.js \
     && node scripts/patch-baileys-newsletter-create.js \
     && npm cache clean --force
 
 # Replace the npm the base image bundles. npm is not on the request path — the entrypoint runs
 # `node dist/main` — but it stays in the image because the operator runbooks drive it
-# (`docker exec openwa npm run cli …`, `npm run export`), and its own bundled dependency tree is
-# what the release image scan reports. node:22-slim ships npm 10.9 (10.9.9 at the pinned digest),
+# (`docker compose run --rm openwa-api npm run migration:run:prod`), and its own bundled dependency
+# tree is what the release image scan reports. node:22-slim ships npm 10.9 (10.9.9 at the pinned digest),
 # whose bundle has carried a critical node-tar advisory plus sigstore/picomatch ones; npm 12 fixes
 # all three.
 # Deliberately AFTER `npm ci`, so the application tree is still resolved by the npm the lockfile
 # was generated with and only the global CLI is swapped. Pinned to the exact patch release —
 # a floating npm@12 would make the image's bundled npm tree depend on when the build happened.
-RUN npm install -g npm@12.0.2 && npm cache clean --force
+RUN npm install -g npm@12.1.0 && npm cache clean --force
 
 # amd64: download Chrome for Testing via Puppeteer and symlink it.
 # arm64: use Debian's chromium installed above (a choice; see the note at that install).

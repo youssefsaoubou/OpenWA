@@ -56,9 +56,9 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
 
   /**
    * Periodically prune webhook_delivery_failures older than WEBHOOK_FAILURE_RETENTION_DAYS
-   * (default 90; set <= 0 to disable). Runs once at startup, then daily. The table is an append-only
-   * log written on every terminally-failed delivery, so without this it grows without bound under a
-   * receiver outage. (Mirrors AuditService's audit-log retention.)
+   * (default 90; set <= 0 to disable). Runs once at startup, then daily. The table records every
+   * failed or unsent delivery (a later successful delivery removes its row), so without this it grows
+   * without bound under a receiver outage. (Mirrors AuditService's audit-log retention.)
    */
   onModuleInit(): void {
     const parsed = Number.parseInt(process.env.WEBHOOK_FAILURE_RETENTION_DAYS ?? '', 10);
@@ -220,21 +220,32 @@ export class WebhookService implements OnModuleInit, OnModuleDestroy {
 
   async update(sessionId: string, id: string, dto: UpdateWebhookDto): Promise<Webhook> {
     const webhook = await this.findOne(sessionId, id);
+    const patch: Partial<Pick<Webhook, 'url' | 'events' | 'secret' | 'headers' | 'filters' | 'active' | 'retryCount'>> =
+      {};
 
-    if (dto.url !== undefined) {
+    // An unchanged URL is not re-validated: every edit re-sends it, so a webhook whose host stopped
+    // resolving or became SSRF-blocked could not otherwise be deactivated or re-filtered. Delivery
+    // still checks the URL on every send.
+    if (dto.url !== undefined && dto.url !== webhook.url) {
       await this.validateWebhookUrl(dto.url);
-      webhook.url = dto.url;
+      patch.url = dto.url;
     }
-    if (dto.events !== undefined) webhook.events = dto.events;
+    if (dto.events !== undefined) patch.events = dto.events;
     // Normalize empty string to null (parity with create) — an empty secret means "no HMAC",
     // not a stored blank that silently disables signing while looking configured.
-    if (dto.secret !== undefined) webhook.secret = dto.secret || null;
-    if (dto.headers !== undefined) webhook.headers = dto.headers;
-    if (dto.filters !== undefined) webhook.filters = dto.filters;
-    if (dto.active !== undefined) webhook.active = dto.active;
-    if (dto.retryCount !== undefined) webhook.retryCount = dto.retryCount;
+    if (dto.secret !== undefined) patch.secret = dto.secret || null;
+    if (dto.headers !== undefined) patch.headers = dto.headers;
+    if (dto.filters !== undefined) patch.filters = dto.filters;
+    if (dto.active !== undefined) patch.active = dto.active;
+    if (dto.retryCount !== undefined) patch.retryCount = dto.retryCount;
+    if (Object.keys(patch).length === 0) return webhook;
 
-    return this.webhookRepository.save(webhook);
+    // A conditional UPDATE of the carried fields, not save() of the entity read above: save() would
+    // re-insert a row a concurrent DELETE removed during the URL check, and write back stale values
+    // of every column this request did not touch.
+    const result = await this.webhookRepository.update({ id, sessionId }, patch);
+    if (!result.affected) throw new NotFoundException(`Webhook with id '${id}' not found`);
+    return this.findOne(sessionId, id);
   }
 
   async delete(sessionId: string, id: string): Promise<void> {

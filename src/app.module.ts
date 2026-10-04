@@ -10,7 +10,7 @@ import { createThrottlerRedisClient } from './common/throttler/throttler-redis.c
 import configuration from './config/configuration';
 import { validateEnv } from './config/env.validation';
 import { createBootDataSource } from './database/pg-boot-migrations';
-import { createMainDataSource, mainConnectionOptions } from './database/main-connection';
+import { createMainDataSource, mainConnectionOptions, SQLITE_BUSY_TIMEOUT_MS } from './database/main-connection';
 import { SessionModule } from './modules/session/session.module';
 import { MessageModule } from './modules/message/message.module';
 import { TemplateModule } from './modules/template/template.module';
@@ -99,7 +99,7 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
       // Let Nest own these so unknown API/socket routes return real 404s/JSON rather
       // than the SPA index.html fallback (Express 5 / path-to-regexp v8 wildcard syntax).
       exclude: ['/api/{*splat}', '/socket.io/{*splat}', '/mcp', '/mcp/{*splat}'],
-      // Disable this module's OWN catch-all SPA fallback. main.ts already serves dashboard
+      // Disable this module's OWN catch-all SPA fallback. configure-app.ts already serves dashboard
       // documents (it injects the per-response CSP nonce, which is why it must own them), and
       // that handler is correctly narrow: it skips /assets and only answers extensionless paths
       // or explicit text/html navigations. The built-in fallback here is not narrow — it answers
@@ -223,6 +223,7 @@ if (dashboardServingEnabled && dashboardBuildPresent) {
           name: 'data',
           type: 'better-sqlite3' as const,
           database: configService.get<string>('dataDatabase.database', './data/openwa.sqlite'),
+          timeout: SQLITE_BUSY_TIMEOUT_MS,
           synchronize,
           migrationsRun: !synchronize,
         };

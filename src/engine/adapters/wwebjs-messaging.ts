@@ -18,7 +18,12 @@ import { MessageNotFoundError } from '../../common/errors/message-not-found.erro
 import { EngineRefusedError } from '../../common/errors/engine-refused.error';
 import { loadRemoteMediaBuffer } from '../../common/media/load-remote-media';
 import { chatKind, userPart } from '../identity/wa-id';
-import { chatHistoryMediaBudgetBytes, coerceDeclaredSize, ingestMediaBudgetBytes } from './inbound-media-cap';
+import {
+  chatHistoryMediaBudgetBytes,
+  coerceDeclaredSize,
+  inboundMediaMaxBytes,
+  ingestMediaBudgetBytes,
+} from './inbound-media-cap';
 import { buildIncomingMessageBase, mapContactFields } from './message-mapper';
 import { buildVCard } from './vcard';
 import { EngineNotSupportedError } from '../../common/errors/engine-not-supported.error';
@@ -367,6 +372,8 @@ export class WwebjsMessaging {
       try {
         return await send(fresh);
       } catch (retryErr) {
+        // The page can die during the retry as well; report it exactly as the first attempt does.
+        this.host.reportIfPageTransportError(retryErr, 'sendMessage');
         // Same remap as the first attempt. Re-resolving the RECIPIENT says nothing about the quoted
         // message, so a send that reaches the page on the fresh id and only then fails on the quote
         // is the same caller fault — without this it would be a 500 on the retry where the identical
@@ -632,13 +639,19 @@ export class WwebjsMessaging {
       // the forwarded copy from an earlier send with the same whole-second timestamp. Only messages
       // WhatsApp Web already holds are read, so this never pages the chat's history in ahead of the
       // send. A failed read never blocks the forward; it only leaves the copy unidentified.
+      // The newest timestamp it saw is kept too: a concurrent call on the destination chat can page
+      // older history in before the second read, and those messages are older than every one loaded.
       let resolvedTo = toChatId;
-      let before = undefined as Set<string> | undefined;
+      let before = undefined as { ids: Set<string>; newest: number } | undefined;
       await this.sendResolved(toChatId, async to => {
         resolvedTo = to;
         before = undefined;
         try {
-          before = new Set((await this.loadedOwnMessages(to)).map(m => toMessageResult(m).id));
+          const snapshot = await this.loadedOwnMessages(to);
+          before = {
+            ids: new Set(snapshot.map(m => toMessageResult(m).id)),
+            newest: snapshot.reduce((newest, m) => Math.max(newest, m.timestamp), 0),
+          };
         } catch (error) {
           this.host.logger.warn(`Could not read the destination chat before forwarding: ${String(error)}`);
         }
@@ -659,7 +672,7 @@ export class WwebjsMessaging {
           const known = before;
           const fresh = (await this.loadedOwnMessages(resolvedTo)).filter(m => {
             const id = toMessageResult(m).id;
-            return id !== '' && !known.has(id);
+            return id !== '' && !known.ids.has(id) && m.timestamp >= known.newest;
           });
           const forwarded = fresh.filter(m => m.isForwarded);
           const sent = fresh.length === 1 ? fresh[0] : forwarded.length === 1 ? forwarded[0] : undefined;
@@ -695,7 +708,7 @@ export class WwebjsMessaging {
     await this.withPage('reactToMessage', async () => {
       // NOTE: do NOT resolve chatId to @lid here — whatsapp-web.js reacts using the found message's own
       // id, not this chatId, so LID-resolving the lookup gives no send benefit and would miss a message
-      // stored under the pre-migration @c.us chat (#583 R1 review).
+      // stored under the pre-migration @c.us chat (#583).
       const chat = await this.client().getChatById(chatId);
       // getChatById RESOLVES undefined for an unknown chat (wwebjs does not throw); guard it so the
       // caller gets the 404 editMessage returns rather than a TypeError surfacing as an opaque 500.
@@ -777,12 +790,13 @@ export class WwebjsMessaging {
     // into a store instead (mediaMaxBytes — the status seed): two ~10 MiB videos are ~28 MiB of
     // base64 and would strip every later status. Such a caller gets a budget derived from its own
     // per-item cap rather than an exemption — unbounded here would mean a 50-item seed could stack
-    // ~650 MiB of base64 on the heap at connect time.
+    // ~650 MiB of base64 on the heap at connect time. The cap is clamped to MEDIA_DOWNLOAD_MAX_BYTES
+    // first, as capInboundMediaFor clamps each item, so an override above it cannot inflate the budget.
     let mediaBudget = !includeMedia
       ? Number.POSITIVE_INFINITY
       : mediaMaxBytes === undefined
         ? chatHistoryMediaBudgetBytes()
-        : ingestMediaBudgetBytes(mediaMaxBytes);
+        : ingestMediaBudgetBytes(Math.min(mediaMaxBytes, inboundMediaMaxBytes()));
     // Sender contacts resolved so far, keyed like Message.getContact() (`author || from`). Each lookup
     // is a page round trip and a history page repeats the same few senders, so resolve each once; a
     // failed lookup is remembered as undefined rather than retried for every later message.
@@ -874,7 +888,7 @@ export class WwebjsMessaging {
     this.host.ensureReady();
     // NOTE: do NOT resolve chatId to @lid here — delete operates on the found message's own key, not
     // this chatId, so LID-resolving the lookup gives no benefit and would miss a message stored under
-    // the pre-migration @c.us chat (#583 R1 review).
+    // the pre-migration @c.us chat (#583).
     await this.withPage('deleteMessage', async () => {
       const chat = await this.client().getChatById(chatId);
       if (!chat) {
@@ -895,7 +909,7 @@ export class WwebjsMessaging {
     // Same lookup window as react/delete: fetchMessages sees only the 100 most recent messages.
     // NOTE: do NOT resolve chatId to @lid here — edit operates on the found message's own key, not
     // this chatId, so LID-resolving the lookup would miss a message stored under the pre-migration
-    // @c.us chat (#583 R1 review).
+    // @c.us chat (#583).
     const edited = await this.withPage('editMessage', async () => {
       const chat = await this.client().getChatById(chatId);
       // getChatById RESOLVES undefined for an unknown chat (wwebjs does not throw) — that is the same

@@ -24,7 +24,8 @@ var (
 	// ErrUnauthorized is returned for a 401 (missing or invalid API key).
 	ErrUnauthorized = errors.New("openwa: unauthorized")
 	// ErrForbidden is returned for a 403: the API key's role or scope (session,
-	// IP or chat allow-list) refuses the call.
+	// IP or chat allow-list) refuses the call, or WhatsApp itself refused the
+	// operation (for example, missing group admin rights).
 	ErrForbidden = errors.New("openwa: forbidden")
 	// ErrNotFound is returned for a 404.
 	ErrNotFound = errors.New("openwa: not found")
@@ -34,8 +35,11 @@ var (
 	// limiter's 429 lifts when its window expires (seconds for the per-second
 	// tier, up to an hour for the hourly tier by default); APIError.RetryAfter
 	// carries its Retry-After header, which WithRetry also honors. A 429 whose
-	// Code is "SEND_PACING_LIMITED" is not transient: do not retry it before
-	// RetryAfter, which then comes from the body and can be hours.
+	// Code is "SEND_PACING_LIMITED" is usually not transient: do not retry it
+	// before RetryAfter, which then comes from the body: a few seconds when
+	// only sends still in flight caused it, the rest of the failure breaker's
+	// cooldown (SEND_PACING_BREAKER_COOLDOWN_MS, 15 minutes by default) after a
+	// run of send failures, otherwise up to the next UTC day.
 	ErrRateLimited = errors.New("openwa: rate limited")
 	// ErrNotImplemented is returned for a 501 (the active engine does not
 	// support this operation).
@@ -46,10 +50,12 @@ var (
 	// because WhatsApp may never answer that query, so bound any retry. The
 	// non-idempotent sends are deliberately left unbounded by the gateway so a
 	// slow WhatsApp reply never answers one, and in a multi-node deployment a
-	// forwarded request answers 503 only when the owner node was never reached.
-	// A forward that fails after the request was sent answers 502 or 504
-	// instead: the owner may already have carried it out, so do not repeat a
-	// non-idempotent send on those unchecked.
+	// forward that fails before reaching the owner node answers 503. A 503 from
+	// the owner itself is relayed unchanged and means the engine did not
+	// confirm in time, so a bounded write may still have been applied; re-read
+	// the state before repeating it. A forward that fails after the request was
+	// sent answers 502 or 504 instead: the owner may already have carried it
+	// out, so do not repeat a non-idempotent send on those unchecked.
 	ErrServiceUnavailable = errors.New("openwa: service unavailable")
 )
 
@@ -110,8 +116,10 @@ func (e *APIError) Is(target error) bool {
 }
 
 // TimeoutError is returned when a request exceeds the configured timeout (or the
-// caller's context deadline).
+// caller's context deadline), whether waiting for the response or reading its body.
 type TimeoutError struct {
+	// Timeout is the client timeout that ran out, or zero when the caller's
+	// context deadline fired first.
 	Timeout time.Duration
 	// Err is the underlying cause (context.DeadlineExceeded or a net timeout).
 	Err error

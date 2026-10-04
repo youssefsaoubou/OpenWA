@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} saat önce",
     "hoursAgo_other": "{{count}} saat önce",
     "optional": "isteğe bağlı",
+    "fieldTooLong": "En fazla {{max}} karakter olabilir (şu an {{count}}).",
     "language": "Dil",
     "back": "Geri",
     "next": "İleri",
@@ -90,6 +91,7 @@
     "noMessageYet": "Henüz mesaj yok",
     "unreadBadge": "{{count}} okunmamış mesaj",
     "unreadBadge_other": "{{count}} okunmamış mesaj",
+    "markedUnread": "Okunmadı olarak işaretlendi",
     "loadingMessages": "Mesajlar yükleniyor...",
     "loadingOlderMessages": "Daha eski mesajlar yükleniyor...",
     "loadOlderMessagesError": "Daha eski mesajlar yüklenemedi. Tekrar denemek için yukarı kaydırın.",
@@ -121,7 +123,6 @@
       "unknownType": "Bilinmeyen tür"
     },
     "you": "Siz",
-    "youPrefix": "Siz: ",
     "yesterday": "Dün",
     "attachTitle": "Dosya / görsel gönder",
     "emojiTitle": "Emoji seç",
@@ -352,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Yapılandırılmış proxy yok",
       "hasCredentials": "Kimlik bilgileri kayıtlı ancak gösterilmiyor. Değiştirmek için tam bir URL girin.",
-      "hint": "Değişiklikler çalışan bir bağlantıya değil, oturumun bir sonraki başlatılışında uygulanır. Proxy gerçek ve erişilebilir olmalıdır: erişilemeyen bir değer QR teslimini engeller ve başlatma 504 döndürür.",
+      "hint": "Değişiklikler çalışan bir bağlantıya değil, oturumun bir sonraki başlatılışında uygulanır. Proxy gerçek ve erişilebilir olmalıdır: erişilemeyen bir değer QR teslimini engeller. whatsapp-web.js'te başlatma 504 döndürür, Baileys'te başlatma başarılı olur ve oturum yeniden denemeye devam eder.",
       "createHint": "Yalnızca ağınız WhatsApp'a doğrudan erişemiyorsa gereklidir. Gerçek ve erişilebilir bir proxy olmalıdır.",
       "invalidUrl": "Geçerli bir http, https, socks4 veya socks5 proxy URL'si girin.",
       "saveSuccessTitle": "Proxy Kaydedildi",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "Filtreler (isteğe bağlı)",
       "hint": "Yalnızca tüm koşullar eşleştiğinde tetiklenir. Mesaj olayları için geçerlidir.",
+      "incomplete": "Her filtre koşuluna bir değer verin ve en fazla 20 koşul, koşul başına 100 değer ve 1000 karakter metin kullanın.",
       "badge": "{{count}} filtre",
       "badge_other": "{{count}} filtre",
       "addCondition": "Koşul ekle",
@@ -485,11 +487,9 @@
       "valueLabel": "Filtre değeri"
     },
     "columns": {
-      "url": "URL",
       "events": "Olaylar",
       "session": "Oturum",
-      "status": "Durum",
-      "actions": "İşlemler"
+      "status": "Durum"
     },
     "empty": {
       "title": "Yapılandırılmış webhook yok",
@@ -599,6 +599,7 @@
     },
     "empty": {
       "title": "Kayıtlı şablon yok",
+      "noMatch": "Aramanızla eşleşen şablon yok.",
       "description": "Sık kullanılan yanıtları ve bildirimleri hızlandırmak için yeniden kullanılabilir bir şablon oluşturun.",
       "noSessionsTitle": "Kullanılabilir oturum yok",
       "noSessionsDesc": "Şablon eklemeden önce bir WhatsApp oturumu oluşturun.",
@@ -668,7 +669,6 @@
       "revoke": "Geçersiz Kıl"
     },
     "actions": {
-      "copy": "Kopyala",
       "revoke": "Geçersiz Kıl",
       "delete": "Sil",
       "edit": "Erişimi düzenle"
@@ -883,7 +883,7 @@
       "sslRejectUnauthorized": "SSL Sertifikasını Doğrula",
       "sslRejectUnauthorizedDesc": "Kendinden imzalı veya geçersiz sertifikaları reddeder. Kendinden imzalı sertifikalara sahip yönetilen Postgres için kapatın (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Veritabanı Geçişleri (Migrations)",
-      "migrationsStatus": "Şema, TypeORM ile otomatik olarak senkronize edilir",
+      "migrationsStatus": "Bekleyen geçişler başlangıçta otomatik olarak uygulanır",
       "migrationsHint": "Geçişler otomatik olarak yönetilir. Manuel geçişler için CLI kullanın."
     },
     "engine": {
@@ -906,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Redis'i Etkinleştir",
-      "enableDesc": "Önbelleğe alma, oturum depolama ve BullMQ kuyrukları için gereklidir",
+      "enableDesc": "Önbelleğe alma, BullMQ kuyrukları, hız sınırı sayaçları ve çok düğümlü WebSocket dağıtımı için kullanılır",
       "useBuiltIn": "Dahili Redis Konteynerini Kullan",
       "builtInDesc": "OpenWA sizin için bir Redis konteynerini yönetecektir",
       "queueTitle": "BullMQ Kuyruk Sistemini Etkinleştir",
@@ -918,7 +918,7 @@
       "failed": "Başarısız",
       "viewBullMq": "Bull MQ Kontrol Panelini Görüntüle",
       "disabledTitle": "Redis Devre Dışı",
-      "disabledDesc": "Önbelleğe alma, oturum depolama ve BullMQ mesaj kuyrukları için Redis'i etkinleştirin.",
+      "disabledDesc": "Önbelleğe alma, BullMQ mesaj kuyrukları, hız sınırı sayaçları ve çok düğümlü WebSocket dağıtımı için Redis'i etkinleştirin.",
       "passwordOptional": "(isteğe bağlı)",
       "bullMqUrlCopied": "Bull MQ kontrol paneli URL'si kopyalandı",
       "bullMqUrlHint": "Bir ADMIN API anahtarıyla açın — normal bir tarayıcı sekmesi kimlik doğrulaması yapamaz."
@@ -978,7 +978,7 @@
       "checking": "Sunucu durumu kontrol ediliyor...",
       "dontClose": "Lütfen bu pencereyi kapatmayın",
       "successMsg": "Sunucu tekrar çevrimiçi! Sayfa otomatik olarak yeniden yüklenecektir.",
-      "errorMsg": "Sunucu 30 saniye sonra yanıt vermedi. Lütfen Docker kayıtlarını kontrol edin ve manuel olarak yeniden başlatın.",
+      "errorMsg": "Sunucu yanıt vermedi. Lütfen Docker kayıtlarını kontrol edin ve manuel olarak yeniden başlatın.",
       "outcomeUnknown": "Sunucu yanıt vermeden önce proxy bir hata döndürdü, bu nedenle yeniden başlatmanın sürüp sürmediği bilinmiyor. Kontrol etmek için bir dakika sonra sayfayı yeniden yükleyin.",
       "reload": "Sayfayı Yeniden Yükle"
     },
@@ -1021,7 +1021,7 @@
     "config": {
       "title": "{{name}} Yapılandır",
       "noOptions": "Bu eklenti için yapılandırma seçeneği bulunmuyor",
-      "uiHandshakeError": "Eklenti yapılandırma arayüzü başlatılamadı. Varsa aşağıdaki şema formunu kullanın.",
+      "uiHandshakeError": "Eklenti yapılandırma arayüzü başlatılamadı.",
       "save": "Yapılandırmayı Kaydet",
       "addItem": "Ekle",
       "tabConfig": "Yapılandırma",
@@ -1052,7 +1052,7 @@
       "healthFail": "Sağlık Kontrolü Başarısız",
       "healthError": "Sağlık Kontrolü Hatası",
       "savedTitle": "Yapılandırma Kaydedildi",
-      "savedDesc": "Değişikliklerin uygulanması için sunucunun yeniden başlatılması gerekir.",
+      "savedDesc": "Değişiklikler sunucu yeniden başlatılmadan geçerli olur.",
       "saveFailed": "Kaydetme Başarısız",
       "installed": "Eklenti yüklendi",
       "installFailed": "Yükleme başarısız",
@@ -1157,7 +1157,7 @@
   },
   "search": {
     "placeholder": "Mesajlarda ara…",
-    "results": "{{count}} sonuç",
+    "loadMore": "Daha fazla göster ({{total}} içinden {{shown}})",
     "empty": "Mesaj bulunamadı.",
     "error": "Arama başarısız oldu. Tekrar deneyin.",
     "unavailable": "Arama yapılandırılmamış.",

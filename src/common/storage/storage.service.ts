@@ -15,7 +15,7 @@ import {
 import { createLogger } from '../services/logger.service';
 import { isSafeStorageKey } from '../utils/path-safety';
 import { DEFAULT_S3_KEY_PREFIX, normalizeS3KeyPrefix } from './s3-key-prefix';
-import { createExportStream, ExportFileSource, importFromStream } from './storage-transfer';
+import { createExportStream, ExportFileSource, importFromStream, isMissingObjectError } from './storage-transfer';
 import {
   listLocalFiles,
   iterateLocalFiles,
@@ -24,6 +24,9 @@ import {
   putLocalFile,
   deleteLocalFile,
 } from './storage-local-files';
+
+// Re-exported so feature modules keep importing it next to StorageService.
+export { isMissingObjectError } from './storage-transfer';
 
 interface S3Config {
   endpoint?: string;
@@ -38,20 +41,27 @@ interface S3Config {
 export const DEFAULT_S3_REPROBE_INTERVAL_MS = 60_000;
 
 /**
- * True when a storage read failed because the object is simply not there.
- *
- * Both backends must be covered, and they report it differently: the local backend raises a POSIX
- * `ENOENT` (a `.code`), while S3 raises `NoSuchKey`/`NotFound`, which carries a `.name` and no
- * `.code` at all — `getS3File` below rethrows that original error when the local read-through also
- * misses. Checking only `.code` turns a missing S3 object into a 500 on the one backend where
- * retention and bucket lifecycle rules make a miss most likely.
+ * Cap on one S3 DeleteObject. The retention purges delete row by row behind a single-flight guard,
+ * so a delete that never settles would hold that guard and stop every later purge until a restart.
  */
-export function isMissingObjectError(error: unknown): boolean {
-  const e = error as { code?: string; name?: string; $metadata?: { httpStatusCode?: number } };
-  return (
-    e?.code === 'ENOENT' || e?.name === 'NoSuchKey' || e?.name === 'NotFound' || e?.$metadata?.httpStatusCode === 404
-  );
-}
+export const S3_DELETE_TIMEOUT_MS = 30_000;
+
+/**
+ * Cap on one bucket probe request. The status endpoint and the storage migration routes await the
+ * probe, and every later re-probe waits on one already in flight, so it gets a tighter bound than
+ * the idle-socket timeout below, and one that also stops the SDK's retries.
+ */
+export const S3_PROBE_TIMEOUT_MS = 10_000;
+
+/**
+ * Connect and idle-socket bounds for every S3 request. Without them a store that accepts the
+ * connection and never answers (a paused container, a stuck proxy) leaves the request pending
+ * forever, holding its media buffer and the caller. The socket bound is an idle timeout, so a long
+ * upload or download that keeps moving bytes is not cut off. A bare requestTimeout would not do:
+ * the HTTP handler only logs a warning when it expires.
+ */
+export const S3_CONNECT_TIMEOUT_MS = 5_000;
+export const S3_SOCKET_TIMEOUT_MS = 30_000;
 
 function positiveIntFromEnv(name: string, fallback: number): number {
   const parsed = Number.parseInt(process.env[name] ?? '', 10);
@@ -98,6 +108,7 @@ export class StorageService implements OnModuleDestroy {
             secretAccessKey,
           },
           ...(endpoint ? { forcePathStyle: true } : {}), // Required for path-style stores (MinIO)
+          requestHandler: { connectionTimeout: S3_CONNECT_TIMEOUT_MS, socketTimeout: S3_SOCKET_TIMEOUT_MS },
         });
         this.s3Bucket = process.env.S3_BUCKET || s3Config.bucket || 'openwa';
         const keyRoot = normalizeS3KeyPrefix(process.env.S3_KEY_PREFIX || s3Config.keyPrefix);
@@ -145,6 +156,7 @@ export class StorageService implements OnModuleDestroy {
       this.logger.log(`S3 bucket '${this.s3Bucket}' is available`);
     } catch (error: unknown) {
       this.logger.error('S3 bucket check failed', String(error));
+      this.lastS3Error = String(error);
       this.warnLocalFallback();
     }
   }
@@ -157,14 +169,18 @@ export class StorageService implements OnModuleDestroy {
    */
   private async ensureS3Bucket(): Promise<void> {
     try {
-      await this.s3Client!.send(new HeadBucketCommand({ Bucket: this.s3Bucket }));
+      await this.s3Client!.send(new HeadBucketCommand({ Bucket: this.s3Bucket }), {
+        abortSignal: AbortSignal.timeout(S3_PROBE_TIMEOUT_MS),
+      });
       return;
     } catch (error: unknown) {
       const name = (error as { name?: string }).name;
       if (name !== 'NotFound' && name !== 'NoSuchBucket') throw error;
     }
     try {
-      await this.s3Client!.send(new CreateBucketCommand({ Bucket: this.s3Bucket }));
+      await this.s3Client!.send(new CreateBucketCommand({ Bucket: this.s3Bucket }), {
+        abortSignal: AbortSignal.timeout(S3_PROBE_TIMEOUT_MS),
+      });
     } catch (error: unknown) {
       // Another replica (or an overlapping probe) created it first, and this deployment owns it.
       // BucketAlreadyExists means another account owns the name, so that one still throws.
@@ -176,8 +192,9 @@ export class StorageService implements OnModuleDestroy {
 
   private warnLocalFallback(): void {
     this.logger.warn(
-      `S3 bucket '${this.s3Bucket}' is unreachable — media storage degraded, using the local fallback dir ` +
-        `'${this.localPath}'. Re-probing every ${this.s3ReprobeIntervalMs}ms; writes return to S3 once it recovers.`,
+      `S3 bucket '${this.s3Bucket}' is unavailable (${this.lastS3Error}); media storage degraded, using the ` +
+        `local fallback dir '${this.localPath}'. Re-probing every ${this.s3ReprobeIntervalMs}ms; writes return ` +
+        'to S3 once it recovers.',
     );
   }
 
@@ -221,6 +238,8 @@ export class StorageService implements OnModuleDestroy {
   }
 
   private lastS3Check = 0;
+  /** Why the last probe failed. The fallback warning names it: a store refusing the create is not an outage. */
+  private lastS3Error = '';
   private s3CheckInFlight: Promise<void> | null = null;
 
   /**
@@ -249,8 +268,9 @@ export class StorageService implements OnModuleDestroy {
           `S3 bucket '${this.s3Bucket}' recovered — media storage back on S3. Files written to the local ` +
             `fallback dir '${this.localPath}' during the outage remain there (still readable via read-through).`,
         );
-      } catch {
-        // still unreachable — leave s3Available false; a later poll retries after the throttle window
+      } catch (error: unknown) {
+        // still unavailable: leave s3Available false; a later poll retries after the throttle window
+        this.lastS3Error = String(error);
       } finally {
         this.s3CheckInFlight = null;
       }
@@ -440,11 +460,20 @@ export class StorageService implements OnModuleDestroy {
     // repoint STORAGE_TYPE, import) leave media behind on the old backend silently, and the
     // operator's own files/count pre-check was truncated by the same path, so the consistency check
     // could not reveal the gap. An export exists to be complete; that is what the uncapped walk is for.
+    // A listed key openFile would refuse (an S3 object named `..`, or one sitting exactly at the key
+    // root) is left out here: the export fails on any open error other than a missing object, and a
+    // key that can never be opened must not fail every export.
     return createExportStream(
-      () => this.listAllFiles(),
+      async () => (await this.listAllFiles()).filter(file => this.isExportableKey(file)),
       filePath => this.openFile(filePath),
       this.logger,
     );
+  }
+
+  private isExportableKey(file: string): boolean {
+    if (isSafeStorageKey(file)) return true;
+    this.logger.warn(`Skipping an unsafe storage key in the export: ${JSON.stringify(file)}`);
+    return false;
   }
 
   /** Every key in the store, uncapped — the completeness counterpart to the capped listFiles(). */
@@ -556,13 +585,14 @@ export class StorageService implements OnModuleDestroy {
       // Read-through: media written while S3 was down lives only in the local fallback dir, so after
       // recovery a plain S3 read would split-brain (NoSuchKey even though the app served the file
       // fine during the outage). Fall through to the local copy; if there is none, surface the
-      // original S3 error so "not found" semantics are unchanged.
+      // original S3 error so "not found" semantics are unchanged. A local copy that exists but cannot
+      // be opened surfaces its own error, so it is never mistaken for a missing file.
       if ((error as { name?: string }).name !== 'NoSuchKey') throw error;
       let local: ExportFileSource;
       try {
         local = await openLocalFile(this.localPath, filePath);
-      } catch {
-        throw error;
+      } catch (localError: unknown) {
+        throw isMissingObjectError(localError) ? error : localError;
       }
       this.logger.debug(`Served '${filePath}' from the local fallback dir (not yet in S3)`);
       return local;
@@ -593,6 +623,7 @@ export class StorageService implements OnModuleDestroy {
         Bucket: this.s3Bucket,
         Key: `${this.s3KeyRoot}${filePath}`,
       }),
+      { abortSignal: AbortSignal.timeout(S3_DELETE_TIMEOUT_MS) },
     );
   }
 }

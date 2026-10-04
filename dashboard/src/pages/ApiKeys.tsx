@@ -36,6 +36,7 @@ import { Modal } from '../components/Modal';
 import { SessionScopePicker } from '../components/SessionScopePicker';
 import { useToast } from '../hooks/useToast';
 import { copyToClipboard } from '../utils/clipboard';
+import { captionLength } from '../utils/bulkMedia';
 import {
   apiKeyDraft,
   apiKeyPatch,
@@ -47,6 +48,7 @@ import {
   parseScopeList,
   sameSessionScope,
   sessionScopeNames,
+  toDateTimeLocal,
   type ApiKeyDraft,
 } from '../utils/sessionScope';
 import './ApiKeys.css';
@@ -78,6 +80,14 @@ function limitErrors(
     ip: unchanged(ipList, stored?.allowedIps) ? null : invalidIpEntry(ipList),
     chat: !canScopeSessions(role) || unchanged(chatList, stored?.allowedChats) ? null : invalidChatEntry(chatList),
   };
+}
+
+// The latest expiry the gateway takes: a UTC year past 9999 serializes with a six-digit year that it
+// refuses. West of UTC that is earlier than 9999-12-31T23:59 local. East of it the UTC cap falls in the
+// local year 10000, which new Date() cannot parse, so the local cap (still in 9999 UTC) is kept.
+function expiryMax(): string {
+  const utcCap = toDateTimeLocal('9999-12-31T23:59:00.000Z');
+  return utcCap.startsWith('9999-') ? utcCap : '9999-12-31T23:59';
 }
 
 // IP, chat and expiry limits shared by the create and edit modals. Chats are offered only where
@@ -149,7 +159,7 @@ function KeyLimitFields({
           id={`${idPrefix}-expires`}
           ref={expiresRef}
           type="datetime-local"
-          max="9999-12-31T23:59"
+          max={expiryMax()}
           value={expires}
           disabled={disabled}
           onChange={e => {
@@ -220,7 +230,7 @@ export function ApiKeys() {
   );
 
   const windowWidth = useWindowSize();
-  const isMobile = windowWidth < 768;
+  const isMobile = windowWidth <= 768;
   const isSmall = windowWidth < 640;
   const [columnVisibility, setColumnVisibility] = useState<ColumnVisibilityState>({});
 
@@ -278,7 +288,10 @@ export function ApiKeys() {
 
   const handleSave = async () => {
     if (!editingKey || !editDraft || !canSave) return;
-    if (editExpiresRef.current && !editExpiresRef.current.validity.valid) {
+    // A stored expiry left as it is is not sent (see apiKeyPatch), so one past this browser's max (set
+    // from another time zone or through the API) does not block an unrelated change.
+    const expiryUntouched = editDraft.expires !== '' && editDraft.expires === toDateTimeLocal(editingKey.expiresAt);
+    if (!expiryUntouched && editExpiresRef.current && !editExpiresRef.current.validity.valid) {
       toast.error(t('apiKeys.edit.title'), t('apiKeys.expiry.invalid'));
       return;
     }
@@ -300,9 +313,13 @@ export function ApiKeys() {
   const newErrors = limitErrors(newKey.role, newKey.ips, newKey.chats);
   const editErrors =
     editDraft && editingKey ? limitErrors(editDraft.role, editDraft.ips, editDraft.chats, editingKey) : null;
-  // The gateway requires a name of at least 3 characters.
+  // The gateway takes a name of 3 to 100 characters, counted the way its validators count them (an
+  // emoji is one); Create is held outside that range.
+  const nameTooShort = captionLength(newKey.name.trim()) < 3;
+  const nameLength = [...newKey.name].length;
+  const nameTooLong = nameLength > 100;
   const canCreate =
-    !createMutation.isPending && newKey.name.trim().length >= 3 && newErrors.ip === null && newErrors.chat === null;
+    !createMutation.isPending && !nameTooShort && !nameTooLong && newErrors.ip === null && newErrors.chat === null;
   const canSave = !updateMutation.isPending && editErrors?.ip === null && editErrors.chat === null;
 
   const handleRevoke = async (id: string) => {
@@ -510,13 +527,16 @@ export function ApiKeys() {
       {showModal && (
         <Modal
           open
-          onClose={closeCreateModal}
+          // The key exists once the request lands, and its secret is shown only here, so the modal
+          // cannot be dismissed until the request settles.
+          onClose={createMutation.isPending ? () => {} : closeCreateModal}
+          hideCloseButton={createMutation.isPending}
           title={createdKey ? t('apiKeys.createdTitle') : t('apiKeys.modalTitle')}
           closeLabel={t('common.close')}
           footer={
             !createdKey ? (
               <>
-                <button className="btn-secondary" onClick={closeCreateModal}>
+                <button className="btn-secondary" onClick={closeCreateModal} disabled={createMutation.isPending}>
                   {t('common.cancel')}
                 </button>
                 <button className="btn-primary" onClick={handleCreate} disabled={!canCreate}>
@@ -556,9 +576,13 @@ export function ApiKeys() {
                 value={newKey.name}
                 onChange={e => setNewKey({ ...newKey, name: e.target.value })}
               />
-              {newKey.name.length > 0 && newKey.name.trim().length < 3 && (
+              {newKey.name.length > 0 && nameTooShort && (
                 <span className="key-field-hint">{t('apiKeys.nameTooShort')}</span>
               )}
+              {/* Kept mounted, unstyled while empty: a live region inserted with its text is often not announced. */}
+              <span className={nameTooLong ? 'key-field-hint' : undefined} role="status">
+                {nameTooLong ? t('common.fieldTooLong', { max: 100, count: nameLength }) : ''}
+              </span>
               <label htmlFor="ak-2">{t('common.role')}</label>
               <select
                 id="ak-2"

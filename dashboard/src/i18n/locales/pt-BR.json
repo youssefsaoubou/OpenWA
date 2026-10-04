@@ -36,6 +36,7 @@
     "hoursAgo_other": "Há {{count}} horas",
     "hoursAgo_many": "Há {{count}} horas",
     "optional": "opcional",
+    "fieldTooLong": "Limite de {{max}} caracteres (agora {{count}}).",
     "language": "Idioma",
     "back": "Voltar",
     "next": "Próximo",
@@ -93,6 +94,7 @@
     "unreadBadge": "{{count}} mensagem não lida",
     "unreadBadge_other": "{{count}} mensagens não lidas",
     "unreadBadge_many": "{{count}} mensagens não lidas",
+    "markedUnread": "Marcado como não lido",
     "loadingMessages": "Carregando mensagens...",
     "loadingOlderMessages": "Carregando mensagens anteriores...",
     "loadOlderMessagesError": "Não foi possível carregar mensagens anteriores. Role para cima para tentar novamente.",
@@ -124,7 +126,6 @@
       "unknownType": "Tipo desconhecido"
     },
     "you": "Você",
-    "youPrefix": "Você: ",
     "yesterday": "Ontem",
     "attachTitle": "Enviar arquivo / imagem",
     "emojiTitle": "Escolher emoji",
@@ -352,7 +353,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "Nenhum proxy configurado",
       "hasCredentials": "As credenciais estão armazenadas, mas não são exibidas. Digite uma URL completa para alterá-las.",
-      "hint": "As alterações se aplicam no próximo início da sessão, não a uma conexão em andamento. O proxy precisa ser real e acessível: um valor inacessível bloqueia a entrega do QR code e o início retorna 504.",
+      "hint": "As alterações se aplicam no próximo início da sessão, não a uma conexão em andamento. O proxy precisa ser real e acessível: um valor inacessível bloqueia a entrega do QR code. No whatsapp-web.js o início retorna 504; no Baileys o início é concluído e a sessão continua tentando reconectar.",
       "createHint": "Necessário apenas quando sua rede não consegue acessar o WhatsApp diretamente. Precisa ser um proxy real e acessível.",
       "invalidUrl": "Digite uma URL de proxy http, https, socks4 ou socks5 válida.",
       "saveSuccessTitle": "Proxy salvo",
@@ -457,6 +458,7 @@
     "filters": {
       "title": "Filtros (opcional)",
       "hint": "Disparar somente quando todas as condições forem atendidas. Aplica-se a eventos de mensagens.",
+      "incomplete": "Informe um valor para cada condição de filtro e use no máximo 20 condições, 100 valores por condição e 1000 caracteres de texto.",
       "badge": "{{count}} filtro",
       "badge_other": "{{count}} filtros",
       "badge_many": "{{count}} filtros",
@@ -491,11 +493,9 @@
       "valueLabel": "Valor do filtro"
     },
     "columns": {
-      "url": "URL",
       "events": "Eventos",
       "session": "Sessão",
-      "status": "Status",
-      "actions": "Ações"
+      "status": "Status"
     },
     "empty": {
       "title": "Nenhum webhook configurado",
@@ -625,7 +625,6 @@
       "revoke": "Revogar"
     },
     "actions": {
-      "copy": "Copiar",
       "revoke": "Revogar",
       "delete": "Excluir",
       "edit": "Editar acesso"
@@ -849,6 +848,7 @@
     },
     "empty": {
       "title": "Nenhum modelo salvo",
+      "noMatch": "Nenhum modelo corresponde à sua pesquisa.",
       "description": "Crie um modelo reutilizável para agilizar respostas e notificações habituais.",
       "noSessionsTitle": "Nenhuma sessão disponível",
       "noSessionsDesc": "Crie uma sessão do WhatsApp antes de adicionar modelos.",
@@ -889,7 +889,7 @@
       "sslRejectUnauthorized": "Verificar certificado SSL",
       "sslRejectUnauthorizedDesc": "Rejeitar certificados autoassinados ou inválidos. Desative para Postgres gerenciado com certificados autoassinados (Supabase, Heroku, Render, Railway).",
       "migrationsTitle": "Migrações do banco de dados",
-      "migrationsStatus": "O esquema é sincronizado automaticamente com TypeORM",
+      "migrationsStatus": "Migrações pendentes são aplicadas automaticamente na inicialização",
       "migrationsHint": "As migrações são gerenciadas automaticamente. Use a CLI para migrações manuais."
     },
     "engine": {
@@ -912,7 +912,7 @@
     "redis": {
       "title": "Redis",
       "enable": "Habilitar Redis",
-      "enableDesc": "Necessário para cache, armazenamento de sessões e filas BullMQ",
+      "enableDesc": "Usado para cache, filas BullMQ, contadores de limite de taxa e distribuição de WebSocket entre vários nós",
       "useBuiltIn": "Usar contêiner Redis integrado",
       "builtInDesc": "OpenWA gerenciará um contêiner Redis para você",
       "queueTitle": "Habilitar sistema de filas BullMQ",
@@ -924,7 +924,7 @@
       "failed": "Falhou",
       "viewBullMq": "Ver painel BullMQ",
       "disabledTitle": "Redis está desabilitado",
-      "disabledDesc": "Habilite o Redis para cache, armazenamento de sessões e filas de mensagens BullMQ.",
+      "disabledDesc": "Habilite o Redis para cache, filas de mensagens BullMQ, contadores de limite de taxa e distribuição de WebSocket entre vários nós.",
       "passwordOptional": "(opcional)",
       "bullMqUrlCopied": "URL do painel do Bull MQ copiada",
       "bullMqUrlHint": "Abra com uma chave de API ADMIN — uma aba do navegador não consegue autenticar."
@@ -964,7 +964,7 @@
       "checking": "Verificando status do servidor...",
       "dontClose": "Por favor, não feche esta janela",
       "successMsg": "O servidor voltou a ficar online! A página será recarregada automaticamente.",
-      "errorMsg": "O servidor não respondeu após 30 segundos. Verifique os logs do Docker e reinicie manualmente.",
+      "errorMsg": "O servidor não respondeu. Verifique os logs do Docker e reinicie manualmente.",
       "outcomeUnknown": "O proxy retornou um erro antes de o servidor responder, então não é possível saber se a reinicialização está em andamento. Recarregue a página em um minuto para verificar.",
       "reload": "Recarregar página"
     },
@@ -1027,7 +1027,7 @@
     "config": {
       "title": "Configurar {{name}}",
       "noOptions": "Não há opções de configuração disponíveis para este plugin",
-      "uiHandshakeError": "A interface de configuração do plugin não foi iniciada. Use o formulário abaixo, se disponível.",
+      "uiHandshakeError": "A interface de configuração do plugin não foi iniciada.",
       "save": "Salvar configuração",
       "addItem": "Adicionar",
       "tabConfig": "Configuração",
@@ -1058,7 +1058,7 @@
       "healthFail": "Verificação de saúde falhou",
       "healthError": "Erro na verificação de saúde",
       "savedTitle": "Configuração salva",
-      "savedDesc": "É necessário reiniciar o servidor para aplicar as alterações.",
+      "savedDesc": "As alterações entram em vigor sem reiniciar o servidor.",
       "saveFailed": "Erro ao salvar",
       "installed": "Plugin instalado",
       "installFailed": "Erro na instalação",
@@ -1163,7 +1163,7 @@
   },
   "search": {
     "placeholder": "Pesquisar mensagens…",
-    "results": "{{count}} resultados",
+    "loadMore": "Mostrar mais ({{shown}} de {{total}})",
     "empty": "Nenhuma mensagem encontrada.",
     "error": "Falha na pesquisa. Tente novamente.",
     "unavailable": "A pesquisa não está configurada.",

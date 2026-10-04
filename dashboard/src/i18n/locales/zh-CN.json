@@ -36,6 +36,7 @@
     "hoursAgo": "{{count}} 小时前",
     "hoursAgo_other": "{{count}} 小时前",
     "optional": "可选",
+    "fieldTooLong": "最多 {{max}} 个字符（当前 {{count}} 个）。",
     "language": "语言",
     "back": "返回",
     "next": "下一步",
@@ -90,6 +91,7 @@
     "noMessageYet": "暂无消息",
     "unreadBadge": "{{count}} 条未读消息",
     "unreadBadge_other": "{{count}} 条未读消息",
+    "markedUnread": "已标记为未读",
     "loadingMessages": "正在加载消息...",
     "loadingOlderMessages": "正在加载更早的消息...",
     "loadOlderMessagesError": "无法加载更早的消息。向上滚动重试。",
@@ -121,7 +123,6 @@
       "unknownType": "未知类型"
     },
     "you": "你",
-    "youPrefix": "你：",
     "yesterday": "昨天",
     "attachTitle": "发送文件 / 图片",
     "emojiTitle": "选择表情",
@@ -347,7 +348,7 @@
       "configured": "{{host}} ({{type}})",
       "noProxy": "未配置代理",
       "hasCredentials": "凭据已保存，但不会显示。输入完整的 URL 即可更改。",
-      "hint": "更改将在下次启动会话时生效，不会作用于正在运行的连接。代理必须真实且可访问：无法访问的代理会导致 QR 码无法送达，启动请求将返回 504。",
+      "hint": "更改将在下次启动会话时生效，不会作用于正在运行的连接。代理必须真实且可访问：无法访问的代理会导致 QR 码无法送达。在 whatsapp-web.js 上启动请求将返回 504，在 Baileys 上启动会成功，但会话会持续重试。",
       "createHint": "仅当你的网络无法直接访问 WhatsApp 时才需要。必须是真实且可访问的代理。",
       "invalidUrl": "请输入有效的 http、https、socks4 或 socks5 代理 URL。",
       "saveSuccessTitle": "代理已保存",
@@ -452,6 +453,7 @@
     "filters": {
       "title": "筛选条件（可选）",
       "hint": "仅当所有条件都匹配时才触发。适用于消息事件。",
+      "incomplete": "请为每个筛选条件填写值，且条件最多 20 个、每个条件最多 100 个值、文本最多 1000 个字符。",
       "badge": "{{count}} 个筛选条件",
       "badge_other": "{{count}} 个筛选条件",
       "addCondition": "添加条件",
@@ -485,11 +487,9 @@
       "valueLabel": "筛选值"
     },
     "columns": {
-      "url": "URL",
       "events": "事件",
       "session": "会话",
-      "status": "状态",
-      "actions": "操作"
+      "status": "状态"
     },
     "empty": {
       "title": "尚未配置 Webhook",
@@ -599,6 +599,7 @@
     },
     "empty": {
       "title": "暂无已保存的模板",
+      "noMatch": "没有与搜索匹配的模板。",
       "description": "创建可复用的模板，加快处理常见回复和通知。",
       "noSessionsTitle": "暂无可用会话",
       "noSessionsDesc": "添加模板前请先创建 WhatsApp 会话。",
@@ -668,7 +669,6 @@
       "revoke": "撤销"
     },
     "actions": {
-      "copy": "复制",
       "revoke": "撤销",
       "delete": "删除",
       "edit": "编辑访问权限"
@@ -883,7 +883,7 @@
       "sslRejectUnauthorized": "验证 SSL 证书",
       "sslRejectUnauthorizedDesc": "拒绝自签名或无效的证书。对于使用自签名证书的托管 Postgres（Supabase、Heroku、Render、Railway），请关闭此项。",
       "migrationsTitle": "数据库迁移",
-      "migrationsStatus": "架构会通过 TypeORM 自动同步",
+      "migrationsStatus": "待处理的迁移会在启动时自动应用",
       "migrationsHint": "迁移会自动管理。手动迁移请使用 CLI。"
     },
     "engine": {
@@ -906,7 +906,7 @@
     "redis": {
       "title": "Redis",
       "enable": "启用 Redis",
-      "enableDesc": "缓存、会话存储和 BullMQ 队列需要 Redis",
+      "enableDesc": "用于缓存、BullMQ 队列、限流计数器和多节点 WebSocket 分发",
       "useBuiltIn": "使用内置 Redis 容器",
       "builtInDesc": "OpenWA 将为你管理 Redis 容器",
       "queueTitle": "启用 BullMQ 队列系统",
@@ -918,7 +918,7 @@
       "failed": "失败",
       "viewBullMq": "查看 Bull MQ 仪表盘",
       "disabledTitle": "Redis 已禁用",
-      "disabledDesc": "启用 Redis 以使用缓存、会话存储和 BullMQ 消息队列。",
+      "disabledDesc": "启用 Redis 以使用缓存、BullMQ 消息队列、限流计数器和多节点 WebSocket 分发。",
       "passwordOptional": "（可选）",
       "bullMqUrlCopied": "已复制 Bull MQ 仪表板网址",
       "bullMqUrlHint": "请使用 ADMIN API 密钥打开 — 浏览器标签页无法进行身份验证。"
@@ -958,7 +958,7 @@
       "checking": "正在检查服务器状态...",
       "dontClose": "请不要关闭此窗口",
       "successMsg": "服务器已恢复在线！页面将自动重新加载。",
-      "errorMsg": "服务器在 30 秒后仍无响应。请检查 Docker 日志并手动重启。",
+      "errorMsg": "服务器无响应。请检查 Docker 日志并手动重启。",
       "outcomeUnknown": "服务器响应前代理返回了错误，因此无法确定重启是否正在进行。请在一分钟后重新加载页面查看。",
       "reload": "重新加载页面"
     },
@@ -1021,7 +1021,7 @@
     "config": {
       "title": "配置 {{name}}",
       "noOptions": "此插件没有可用配置项",
-      "uiHandshakeError": "插件配置界面未初始化。如有可用的架构表单，请使用下方表单。",
+      "uiHandshakeError": "插件配置界面未初始化。",
       "save": "保存配置",
       "addItem": "添加",
       "tabConfig": "配置",
@@ -1052,7 +1052,7 @@
       "healthFail": "健康检查失败",
       "healthError": "健康检查出错",
       "savedTitle": "配置已保存",
-      "savedDesc": "需要重启服务器以应用更改。",
+      "savedDesc": "更改无需重启服务器即可生效。",
       "saveFailed": "保存失败",
       "installed": "插件已安装",
       "installFailed": "安装失败",
@@ -1157,7 +1157,7 @@
   },
   "search": {
     "placeholder": "搜索消息…",
-    "results": "{{count}} 条结果",
+    "loadMore": "显示更多（{{shown}}/{{total}}）",
     "empty": "未找到消息。",
     "error": "搜索失败。请重试。",
     "unavailable": "搜索未配置。",

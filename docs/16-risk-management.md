@@ -8,8 +8,8 @@ quadrantChart
     x-axis Low Impact --> High Impact
     y-axis Low Probability --> High Probability
 
-    quadrant-1 Monitor
-    quadrant-2 Critical
+    quadrant-1 Critical
+    quadrant-2 Monitor
     quadrant-3 Low Priority
     quadrant-4 Mitigate
 
@@ -19,6 +19,8 @@ quadrantChart
     Maintainer Burnout: [0.5, 0.4]
     Dependency Issues: [0.4, 0.6]
     Legal Issues: [0.8, 0.2]
+    Rate Limiting: [0.45, 0.7]
+    Data Loss: [0.7, 0.2]
 ```
 
 ## 16.2 Risk Register
@@ -47,7 +49,7 @@ WhatsApp can change its Web and multi-device protocols at any time, which can st
 
 ```mermaid
 flowchart TB
-    R[Risk: Protocol Change] --> M1[Monitor whatsapp-web.js repo]
+    R[Risk: Protocol Change] --> M1[Monitor both engine libraries]
     R --> M2[Implement abstraction layer]
     R --> M3[Prepare alternative engines]
     R --> M4[Quick response plan]
@@ -58,7 +60,7 @@ flowchart TB
     M4 --> A4[< 24h patch capability]
 ```
 
-Switching `ENGINE_TYPE` (M3) helps only when one engine library breaks. A gate WhatsApp enforces inside the linking handshake, such as the passkey step ([#560](https://github.com/rmyndharis/OpenWA/issues/560), upstream [WhiskeySockets/Baileys#2672](https://github.com/WhiskeySockets/Baileys/issues/2672)), stops new links on both engines; the fix has to come from the engine libraries, and operators rely on their fallback channel until then (see [Plan A](#plan-a-whatsapp-protocol-change)).
+Switching `ENGINE_TYPE` (M3) helps only when one engine library breaks, and every session must then be linked again, because each engine keeps its own auth state. A gate WhatsApp enforces inside the linking handshake, such as the passkey step ([#560](https://github.com/rmyndharis/OpenWA/issues/560), upstream [WhiskeySockets/Baileys#2672](https://github.com/WhiskeySockets/Baileys/issues/2672)), stops new links on both engines; the fix has to come from the engine libraries, and operators rely on their fallback channel until then (see [Plan A](#plan-a-whatsapp-protocol-change)).
 
 **Action Items:**
 
@@ -130,7 +132,8 @@ session's age (`SEND_PACING_WARMUP_SCHEDULE`), a separate cap on new conversatio
 (`SEND_PACING_COLD_DAILY_CAP`) and a consecutive-failure breaker — see
 [06 §Send pacing](./06-api-specification.md). It is **off by default**, and it counts only sends that
 write a `messages` row, so status posts and message edits are checked against the cap without
-counting into it.
+counting into it. Clearing or deleting a chat removes its stored rows, so that chat's sends today
+stop counting toward either cap, and the next send to it counts as a new conversation.
 
 Still not implemented: there are no per-minute or per-hour caps and no media-specific delay. With
 pacing off — the default — the guidelines below are operator discipline, not something the gateway
@@ -168,7 +171,7 @@ enforces.
 | **Category**    | Security  |
 | **Probability** | Low (30%) |
 | **Impact**      | Critical  |
-| **Risk Level**  | High      |
+| **Risk Level**  | Medium    |
 
 **Description:**  
 Security vulnerabilities may lead to unauthorized access to sessions, data, or infrastructure.
@@ -451,7 +454,8 @@ flowchart TB
 
     E --> |One engine| C1[Notify users]
     C1 --> C2[Set ENGINE_TYPE to the unaffected engine]
-    C2 --> M1
+    C2 --> C3[Link every session again on the new engine - auth state is per engine]
+    C3 --> M1
     E --> |Both engines or server-side gate| B1[Notify users and link the tracking issue]
     B1 --> B2[Keep linked sessions running - no logout or restart churn]
     B2 --> B3[Operators move critical traffic to their fallback channel]
@@ -460,6 +464,8 @@ flowchart TB
 ```
 
 During a both-engines event keep linked sessions running rather than logging them out or deleting them: linking again may hit the same gate.
+
+After a one-engine switch every session starts without credentials, because each engine keeps its own auth state. An account behind the passkey gate cannot link again, so keep it on the fallback channel.
 
 ### Plan B: Critical Security Vulnerability
 
@@ -533,7 +539,7 @@ WhatsApp has undocumented internal rate limits. Sending too many messages can tr
 **Built-in Safeguards:**
 
 The gateway enforces HTTP request throttling (`@nestjs/throttler`, registered globally as
-`ProxyAwareThrottlerGuard` and tracked per client IP) plus the bulk-send pacing described in R002:
+`ProxyAwareThrottlerGuard` and tracked per route handler and client IP) plus the bulk-send pacing described in R002:
 
 | Control                                               | Default                    | Scope                                                         |
 | ----------------------------------------------------- | -------------------------- | ------------------------------------------------------------- |
@@ -612,6 +618,10 @@ flowchart TB
 ---
 
 ## 16.6 Escalation Procedures
+
+Optional template: the project does not run this process. OpenWA has one maintainer and no on-call
+rotation, paging, chat channel or status page; incidents are handled through GitHub Issues, and security
+reports through GitHub Security Advisories (see [SECURITY.md](../SECURITY.md)).
 
 ### Severity Levels
 
