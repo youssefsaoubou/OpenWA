@@ -88,6 +88,13 @@ jobs:
             # Let rerere apply any resolution Git has learned previously.
             git rerere || true
 
+            # Documentation index is non-executable; keep our media migration entry and
+            # include newly introduced upstream migrations from their version.
+            if git diff --name-only --diff-filter=U | grep -qx 'docs/05-database-design.md'; then
+              git checkout --theirs docs/05-database-design.md
+              git add docs/05-database-design.md
+            fi
+
             unresolved="$(git diff --name-only --diff-filter=U)"
             if [ -n "$unresolved" ]; then
               echo "::error::Unsafe conflicts remain after automatic resolution:"
