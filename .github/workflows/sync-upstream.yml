@@ -102,7 +102,7 @@ jobs:
           if own not in data:
               if marker not in data:
                   raise SystemExit("Cannot safely update the migration index; upstream layout changed")
-              data = data.replace(marker, own + "\\n" + marker, 1)
+              data = data.replace(marker, own + "\n" + marker, 1)
               path.write_text(data)
           PY
               git add docs/05-database-design.md
