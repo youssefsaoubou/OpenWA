@@ -98,18 +98,19 @@ jobs:
           content = path.read_text()
           entry = "1790770000000-AddMediaTemplateFields.ts"
           if entry not in content:
-              match = re.search(r"(?m)^(?P<prefix>[├└]── )(?P<name>\d+-[^\n]+\.ts)(?P<comment>[^\n]*)$", content)
-              block = re.search(r"(?m)^([├└]── \d+-[^\n]+\.ts[^\n]*\n)+", content)
-              if not match or not block:
-                  raise SystemExit("Unexpected migration index format: manual resolution required")
-              lines = block.group(0).splitlines()
-              line = "├── " + entry + "   # adds template media fields"
-              lines.append(line)
-              lines.sort(key=lambda item: re.search(r"\d{13}", item).group())
-              for i in range(len(lines)):
-                  lines[i] = ("└── " if i == len(lines)-1 else "├── ") + lines[i][4:]
-              content = content[:block.start()] + "\n".join(lines) + "\n" + content[block.end():]
-              path.write_text(content)
+              lines = content.splitlines(keepends=True)
+              candidates = [i for i, line in enumerate(lines) if re.match(r"^[├└]── \d{13}-[^\n]+\.ts", line)]
+              if not candidates:
+                  raise SystemExit("Migration index not found; manual resolution required")
+              insertion = next((i for i in candidates if int(re.search(r"\d{13}", lines[i]).group()) > 1790770000000), candidates[-1] + 1)
+              if insertion == candidates[-1] + 1:
+                  last = candidates[-1]
+                  lines[last] = lines[last].replace("└── ", "├── ", 1)
+                  prefix = "└── "
+              else:
+                  prefix = "├── "
+              lines.insert(insertion, prefix + entry + "   # adds template media fields\n")
+              path.write_text("".join(lines))
           PY
               git add docs/05-database-design.md
             fi
