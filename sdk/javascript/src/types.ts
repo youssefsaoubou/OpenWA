@@ -1323,6 +1323,8 @@ export interface TemplateRecord {
   body: string;
   header?: string | null;
   footer?: string | null;
+  type: 'text' | 'image';
+  mediaUrl?: string | null;
   createdAt: string;
   updatedAt: string;
 }

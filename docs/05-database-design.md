@@ -933,7 +933,11 @@ src/database/migrations/           # data connection (pluggable)
 ├── 1787100000000-AddSendIdempotencyKeys.ts   # send_idempotency_keys (opt-in send retry guard)
 ├── 1787200000000-DeduplicateTerminalWebhookFailures.ts   # one terminal record per webhook and idempotency key
 ├── 1790770000000-AddMediaTemplateFields.ts   # adds template media fields
-└── 1790812800000-AddMessageWindowIndexes.ts   # compound timestamp indexes for message-time pagination
+├── 1790812800000-AddMessageWindowIndexes.ts   # compound timestamp indexes for message-time pagination
+├── 1791100000000-AddIntegrationDeliveryFailureDeliveryIndex.ts
+├── 1791200000000-AddWebhookOutboxSessionIndex.ts
+├── 1791300000000-BackfillLegacyMessageTypes.ts
+└── 1791400000000-AddLidMappingReportSource.ts
 ```
 
 > [!NOTE]

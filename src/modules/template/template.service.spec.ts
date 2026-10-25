@@ -194,6 +194,7 @@ describe('TemplateService', () => {
 
       expect(repository.save).toHaveBeenCalledWith(
         expect.objectContaining({ header: null, footer: null, mediaUrl: null }),
+        { transaction: false },
       );
     });
 

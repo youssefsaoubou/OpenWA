@@ -23,10 +23,6 @@ import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error'
 import { SendIdempotencyKey } from './entities/send-idempotency-key.entity';
 import { SendIdempotencyService } from './idempotency/send-idempotency.service';
 import { SendIdempotencyInterceptor } from './idempotency/send-idempotency.interceptor';
-import * as sessionWriteScope from '../../common/utils/session-write-scope';
-
-// The real function, held before any test spies on the module export.
-const realCaptureSessionWrites = sessionWriteScope.captureSessionWrites;
 
 /** Pacing is off by default in these tests; the governor's own spec covers its behaviour. */
 const inertPacing = (): SendPacingService =>

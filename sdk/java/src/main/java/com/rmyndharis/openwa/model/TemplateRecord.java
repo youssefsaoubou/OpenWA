@@ -9,5 +9,7 @@ public record TemplateRecord(
     String body,
     String header,
     String footer,
+    TemplateType type,
+    String mediaUrl,
     String createdAt,
     String updatedAt) {}

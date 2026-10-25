@@ -44,6 +44,8 @@ type TemplateRecord struct {
 	Body      string  `json:"body"`
 	Header    *string `json:"header,omitempty"`
 	Footer    *string `json:"footer,omitempty"`
+	Type      TemplateType `json:"type"`
+	MediaURL  *string `json:"mediaUrl,omitempty"`
 	CreatedAt string  `json:"createdAt"`
 	UpdatedAt string  `json:"updatedAt"`
 }
@@ -76,6 +78,8 @@ type UpdateTemplateRequest struct {
 	Body   string  `json:"body,omitempty"`
 	Header *string `json:"header,omitempty"`
 	Footer *string `json:"footer,omitempty"`
+	Type   TemplateType `json:"type,omitempty"`
+	MediaURL *string `json:"mediaUrl,omitempty"`
 }
 
 // ── Label (WhatsApp Business) ────────────────────────────────

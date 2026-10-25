@@ -71,6 +71,7 @@ export class CreateTemplateDto {
     maxLength: MEDIA_URL_MAX_LENGTH,
   })
   @ValidateIf((o: CreateTemplateDto) => o.type === 'image' || o.mediaUrl !== undefined)
+  @ToStrictString()
   @IsString()
   @IsNotEmpty()
   @MaxLength(MEDIA_URL_MAX_LENGTH)

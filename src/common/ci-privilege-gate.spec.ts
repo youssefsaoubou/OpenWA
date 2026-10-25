@@ -2354,6 +2354,7 @@ describe('every workflow holds the token at contents: read for the jobs that nam
     'sdk-ci.yml',
     'security-scan.yml',
     'split-php-sdk.yml',
+    'sync-upstream.yml',
   ];
 
   const grantProblems = (workflow: PermissionedWorkflow): string[] => {

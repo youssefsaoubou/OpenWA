@@ -110,19 +110,15 @@ export class MessageSendService {
     if (dto.linkPreview === false && dto.customLinkPreview) {
       throw new BadRequestException('linkPreview: false cannot be combined with customLinkPreview');
     }
-    const finalDto = await this.applySendingGate(sessionId, 'text', dto);
-
-    const engine = this.getEngine(sessionId);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
+    const { message, finalDto, engine } = await this.applySendingGate(sessionId, 'text', dto, finalDto => ({
       chatId: finalDto.chatId,
       body: finalDto.text,
       type: 'text',
       quotedMessageId: finalDto.quotedMessageId,
     }));
 
-    // Opt-in humanising "typing…" pause before the actual send (anti-automation signal).
+    // Humanising "typing…" pause before the actual send (anti-automation signal). On by default;
+    // SIMULATE_TYPING=false disables it.
     await this.simulateTypingIfEnabled(engine, finalDto.chatId, finalDto.text);
 
     let result: MessageResult;
@@ -165,7 +161,13 @@ export class MessageSendService {
    * the send/query split), on the same core/hooks/sending-gate implementation shared with
    * StatusService.
    */
-  private async applySendingGate<T extends object>(sessionId: string, type: string, input: T): Promise<T> {
+  private async applySendingGate<T extends object, P = undefined>(
+    sessionId: string,
+    type: string,
+    input: T,
+    buildPending: (finalDto: T, prepared: P) => SaveOutgoingMessageData | Promise<SaveOutgoingMessageData>,
+    prepare?: (finalDto: T) => P,
+  ): Promise<{ finalDto: T; engine: IWhatsAppEngine; prepared: P; message: Message }> {
     // Pacing runs BEFORE the plugin gate, so a send that policy forbids never reaches a plugin at
     // all — plugins should not be asked to moderate, or given the chance to rewrite, traffic that is
     // not going to be sent. The consequence is deliberate and documented in the hook contract: a
@@ -176,8 +178,33 @@ export class MessageSendService {
     // its persisted row still drained the cold budget. Edit carries a chatId too; the edited
     // message's own row already makes that chat warm, so the gate is a no-op there.
     const target = input as { chatId?: string; toChatId?: string };
-    await this.pacing.assertSendAllowed(sessionId, target.chatId ?? target.toChatId);
-    return applySendingGate(this.hookManager, sessionId, type, input, 'MessageService');
+    const lifetime = captureSessionWrites(
+      this.messageRepository.manager?.connection ?? this.messageRepository,
+      sessionId,
+    );
+    let release: SettleAdmission | undefined;
+    // Everything a sender does before its PENDING row is written runs in here (the plugin gate, the
+    // engine lookup, preparation and initial persistence), so a failure hands its pacing admission back: with no
+    // row it never counts, and holding it would refuse the caller's next send near the cap.
+    let persisted = false;
+    try {
+      release = await this.pacing.assertSendAllowed(sessionId, target.chatId ?? target.toChatId, {
+        whilePreparing: true,
+      });
+      if (release) lifetime.onRetire(release);
+      lifetime.assertCurrent();
+      const finalDto = await applySendingGate(this.hookManager, sessionId, type, input, 'MessageService');
+      lifetime.assertCurrent();
+      const engine = this.getEngine(sessionId);
+      const prepared = prepare?.(finalDto) as P;
+      const message = await this.saveOutgoingMessage(sessionId, await buildPending(finalDto, prepared), lifetime);
+      lifetime.assertCurrent();
+      persisted = true;
+      return { finalDto, engine, prepared, message };
+    } finally {
+      release?.(persisted);
+      lifetime.close();
+    }
   }
 
   /**
@@ -303,20 +330,26 @@ export class MessageSendService {
   }
 
   async sendImage(sessionId: string, dto: SendMediaMessageDto): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'image', dto);
-    const engine = this.getEngine(sessionId);
-    const media = this.buildMediaInput(finalDto);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      body: finalDto.caption || '',
-      type: 'image',
-      quotedMessageId: finalDto.quotedMessageId,
-      metadata: {
-        media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
-      },
-    });
+    const {
+      message,
+      finalDto,
+      engine,
+      prepared: media,
+    } = await this.applySendingGate(
+      sessionId,
+      'image',
+      dto,
+      (finalDto, media) => ({
+        chatId: finalDto.chatId,
+        body: finalDto.caption || '',
+        type: 'image',
+        quotedMessageId: finalDto.quotedMessageId,
+        metadata: {
+          media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
+        },
+      }),
+      (d: SendMediaMessageDto) => this.buildMediaInput(d),
+    );
 
     let result: MessageResult;
     try {
@@ -328,20 +361,26 @@ export class MessageSendService {
   }
 
   async sendVideo(sessionId: string, dto: SendMediaMessageDto): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'video', dto);
-    const engine = this.getEngine(sessionId);
-    const media = this.buildMediaInput(finalDto);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      body: finalDto.caption || '',
-      type: 'video',
-      quotedMessageId: finalDto.quotedMessageId,
-      metadata: {
-        media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
-      },
-    });
+    const {
+      message,
+      finalDto,
+      engine,
+      prepared: media,
+    } = await this.applySendingGate(
+      sessionId,
+      'video',
+      dto,
+      (finalDto, media) => ({
+        chatId: finalDto.chatId,
+        body: finalDto.caption || '',
+        type: 'video',
+        quotedMessageId: finalDto.quotedMessageId,
+        metadata: {
+          media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
+        },
+      }),
+      (d: SendMediaMessageDto) => this.buildMediaInput(d),
+    );
 
     let result: MessageResult;
     try {
@@ -356,23 +395,31 @@ export class MessageSendService {
     // Label a PTT send 'voice' in the gate (not 'audio') so message:sending, message:failed, and the
     // persisted row all carry the same type for one outbound voice note — failSend and the saved row
     // already use `finalDto.ptt ? 'voice' : 'audio'`.
-    const finalDto = await this.applySendingGate(sessionId, dto.ptt ? 'voice' : 'audio', dto);
-    const engine = this.getEngine(sessionId);
-    // Voice notes need a real audio codec; default to ogg/opus when the caller omits a mimetype so the
-    // wire message and the persisted record agree. Resolved BEFORE buildMediaInput so its base64
-    // mimetype guard sees the effective type. buildMediaInput itself stays generic (shared by all media).
-    const audioDto =
-      finalDto.ptt && !finalDto.mimetype ? { ...finalDto, mimetype: 'audio/ogg; codecs=opus' } : finalDto;
-    const media = this.buildMediaInput(audioDto);
-    media.ptt = finalDto.ptt;
-
-    // Save message as pending BEFORE sending. A PTT send is a 'voice' note (matches inbound
-    // classification, the outbound webhook echo, stats, and the dashboard), not a plain 'audio' file.
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      type: finalDto.ptt ? 'voice' : 'audio',
-      metadata: {
-        media: { mimetype: audioDto.mimetype, filename: finalDto.filename, data: media.data },
+    const {
+      message,
+      finalDto,
+      engine,
+      prepared: { media },
+    } = await this.applySendingGate(
+      sessionId,
+      dto.ptt ? 'voice' : 'audio',
+      dto,
+      (finalDto, { audioDto, media }) => ({
+        chatId: finalDto.chatId,
+        type: finalDto.ptt ? 'voice' : 'audio',
+        metadata: {
+          media: { mimetype: audioDto.mimetype, filename: finalDto.filename, data: media.data },
+        },
+        quotedMessageId: finalDto.quotedMessageId,
+      }),
+      (gated: SendAudioMessageDto) => {
+        // Voice notes need a real audio codec; default to ogg/opus when the caller omits a mimetype so the
+        // wire message and the persisted record agree. Resolved BEFORE buildMediaInput so its base64
+        // mimetype guard sees the effective type. buildMediaInput itself stays generic (shared by all media).
+        const audioDto = gated.ptt && !gated.mimetype ? { ...gated, mimetype: 'audio/ogg; codecs=opus' } : gated;
+        const media = this.buildMediaInput(audioDto);
+        media.ptt = gated.ptt;
+        return { audioDto, media };
       },
     );
 
@@ -386,20 +433,26 @@ export class MessageSendService {
   }
 
   async sendDocument(sessionId: string, dto: SendMediaMessageDto): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'document', dto);
-    const engine = this.getEngine(sessionId);
-    const media = this.buildMediaInput(finalDto);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      body: finalDto.caption || finalDto.filename || '',
-      type: 'document',
-      quotedMessageId: finalDto.quotedMessageId,
-      metadata: {
-        media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
-      },
-    });
+    const {
+      message,
+      finalDto,
+      engine,
+      prepared: media,
+    } = await this.applySendingGate(
+      sessionId,
+      'document',
+      dto,
+      (finalDto, media) => ({
+        chatId: finalDto.chatId,
+        body: finalDto.caption || finalDto.filename || '',
+        type: 'document',
+        quotedMessageId: finalDto.quotedMessageId,
+        metadata: {
+          media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
+        },
+      }),
+      (d: SendMediaMessageDto) => this.buildMediaInput(d),
+    );
 
     let result: MessageResult;
     try {
@@ -421,11 +474,7 @@ export class MessageSendService {
       quotedMessageId?: string;
     },
   ): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'location', dto);
-    const engine = this.getEngine(sessionId);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
+    const { message, finalDto, engine } = await this.applySendingGate(sessionId, 'location', dto, finalDto => ({
       chatId: finalDto.chatId,
       body: `📍 ${finalDto.description || 'Location'}`,
       type: 'location',
@@ -451,11 +500,7 @@ export class MessageSendService {
     sessionId: string,
     dto: { chatId: string; contactName: string; contactNumber: string; quotedMessageId?: string },
   ): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'contact', dto);
-    const engine = this.getEngine(sessionId);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
+    const { message, finalDto, engine } = await this.applySendingGate(sessionId, 'contact', dto, finalDto => ({
       chatId: finalDto.chatId,
       body: `📇 ${finalDto.contactName}`,
       type: 'contact',
@@ -479,12 +524,7 @@ export class MessageSendService {
     sessionId: string,
     dto: { chatId: string; name: string; options: string[]; allowMultipleAnswers?: boolean; quotedMessageId?: string },
   ): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'poll', dto);
-    const engine = this.getEngine(sessionId);
-
-    // Save message as pending BEFORE sending. A poll has no plain-text body, so store the
-    // question — that keeps the message history readable.
-    const message = await this.saveOutgoingMessage(sessionId, {
+    const { message, finalDto, engine } = await this.applySendingGate(sessionId, 'poll', dto, finalDto => ({
       chatId: finalDto.chatId,
       body: `📊 ${finalDto.name}`,
       type: 'poll',
@@ -513,19 +553,25 @@ export class MessageSendService {
   }
 
   async sendSticker(sessionId: string, dto: SendMediaMessageDto): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'sticker', dto);
-    const engine = this.getEngine(sessionId);
-    const media = this.buildMediaInput(finalDto);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      type: 'sticker',
-      quotedMessageId: finalDto.quotedMessageId,
-      metadata: {
-        media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
-      },
-    });
+    const {
+      message,
+      finalDto,
+      engine,
+      prepared: media,
+    } = await this.applySendingGate(
+      sessionId,
+      'sticker',
+      dto,
+      (finalDto, media) => ({
+        chatId: finalDto.chatId,
+        type: 'sticker',
+        quotedMessageId: finalDto.quotedMessageId,
+        metadata: {
+          media: { mimetype: finalDto.mimetype, filename: finalDto.filename, data: media.data },
+        },
+      }),
+      (d: SendMediaMessageDto) => this.buildMediaInput(d),
+    );
 
     let result: MessageResult;
     try {
@@ -540,20 +586,16 @@ export class MessageSendService {
     sessionId: string,
     dto: { chatId: string; quotedMessageId: string; text: string; mentions?: string[] },
   ): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'reply', dto);
-    const engine = this.getEngine(sessionId);
-
-    // Resolve the quoted message body (best-effort) so the dashboard can render the reply preview.
-    const quotedBody = await this.resolveQuotedBody(sessionId, finalDto.quotedMessageId, finalDto.chatId);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      body: finalDto.text,
-      type: 'text',
-      metadata: {
-        quotedMessage: { id: finalDto.quotedMessageId, body: quotedBody },
-      },
+    const { message, finalDto, engine } = await this.applySendingGate(sessionId, 'reply', dto, async finalDto => {
+      const quotedBody = await this.resolveQuotedBody(sessionId, finalDto.quotedMessageId, finalDto.chatId);
+      return {
+        chatId: finalDto.chatId,
+        body: finalDto.text,
+        type: 'text',
+        metadata: {
+          quotedMessage: { id: finalDto.quotedMessageId, body: quotedBody },
+        },
+      };
     });
 
     let result: MessageResult;
@@ -573,21 +615,21 @@ export class MessageSendService {
     sessionId: string,
     dto: { chatId: string; messageId: string; buttonId: string; text?: string },
   ): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'click-button', dto);
-    const engine = this.getEngine(sessionId);
-
-    // A click IS a reply to the prompt, so resolve the prompt's body the way reply() does: the
-    // dashboard renders the quote box from this field, and a hardcoded empty string left every
-    // answered prompt showing an empty quote above the choice the user tapped.
-    const promptBody = await this.resolveQuotedBody(sessionId, finalDto.messageId, finalDto.chatId);
-
-    const message = await this.saveOutgoingMessage(sessionId, {
-      chatId: finalDto.chatId,
-      body: finalDto.text || finalDto.buttonId,
-      type: 'text',
-      metadata: {
-        quotedMessage: { id: finalDto.messageId, body: promptBody },
-        button: { id: finalDto.buttonId, text: finalDto.text },
+    const { message, finalDto, engine } = await this.applySendingGate(
+      sessionId,
+      'click-button',
+      dto,
+      async finalDto => {
+        const promptBody = await this.resolveQuotedBody(sessionId, finalDto.messageId, finalDto.chatId);
+        return {
+          chatId: finalDto.chatId,
+          body: finalDto.text || finalDto.buttonId,
+          type: 'text',
+          metadata: {
+            quotedMessage: { id: finalDto.messageId, body: promptBody },
+            button: { id: finalDto.buttonId, text: finalDto.text },
+          },
+        };
       },
     );
 
@@ -619,11 +661,7 @@ export class MessageSendService {
     sessionId: string,
     dto: { fromChatId: string; toChatId: string; messageId: string },
   ): Promise<MessageResponseDto> {
-    const finalDto = await this.applySendingGate(sessionId, 'forward', dto);
-    const engine = this.getEngine(sessionId);
-
-    // Save message as pending BEFORE sending
-    const message = await this.saveOutgoingMessage(sessionId, {
+    const { message, finalDto, engine } = await this.applySendingGate(sessionId, 'forward', dto, finalDto => ({
       chatId: finalDto.toChatId,
       body: '[Forwarded]',
       type: 'forward',

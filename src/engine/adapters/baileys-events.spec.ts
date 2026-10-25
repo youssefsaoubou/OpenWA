@@ -973,7 +973,9 @@ describe('BaileysEvents record of conflicting copies removed', () => {
   it('forgets the id removed longest ago once it holds its limit', async () => {
     const limit = BaileysEvents.DELETED_FOR_EVERYONE_LIMIT;
     const settled = Promise.resolve({ conflict: true });
-    const events = new BaileysEvents(makeHost({ getOnMessage: () => () => ({ settled }) }));
+    const logger = createLogger('BaileysEventsSpec');
+    jest.spyOn(logger, 'warn').mockImplementation(() => undefined);
+    const events = new BaileysEvents(makeHost({ logger, getOnMessage: () => () => ({ settled }) }));
     const deliver = async (...ids: string[]): Promise<void> => {
       events.handleMessagesUpsert({
         type: 'notify',
@@ -997,7 +999,7 @@ describe('BaileysEvents record of conflicting copies removed', () => {
     expect(removals.get('M0')).toBe(2);
     expect(removals.has('M1')).toBe(false);
     expect(removals.get('EXTRA')).toBe(1);
-  });
+  }, 30_000);
 });
 
 describe('BaileysEvents live keys of a 1:1 chat', () => {

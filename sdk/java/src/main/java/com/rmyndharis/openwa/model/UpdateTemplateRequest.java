@@ -1,7 +1,7 @@
 package com.rmyndharis.openwa.model;
 
 /** Request body for updating a template. Every field is optional; {@code null} fields are omitted from the payload. */
-public record UpdateTemplateRequest(String name, String body, String header, String footer) {
+public record UpdateTemplateRequest(String name, String body, String header, String footer, TemplateType type, String mediaUrl) {
     public static Builder builder() {
         return new Builder();
     }
@@ -11,6 +11,8 @@ public record UpdateTemplateRequest(String name, String body, String header, Str
         private String body;
         private String header;
         private String footer;
+        private TemplateType type;
+        private String mediaUrl;
 
         /** Unique template name within the session. */
         public Builder name(String v) {
@@ -34,8 +36,18 @@ public record UpdateTemplateRequest(String name, String body, String header, Str
             return this;
         }
 
+        public Builder type(TemplateType v) {
+            this.type = v;
+            return this;
+        }
+
+        public Builder mediaUrl(String v) {
+            this.mediaUrl = v;
+            return this;
+        }
+
         public UpdateTemplateRequest build() {
-            return new UpdateTemplateRequest(name, body, header, footer);
+            return new UpdateTemplateRequest(name, body, header, footer, type, mediaUrl);
         }
     }
 }

@@ -1325,6 +1325,8 @@ class TemplateRecord(TypedDict):
     body: str
     header: NotRequired[str | None]
     footer: NotRequired[str | None]
+    type: Literal["text", "image"]
+    mediaUrl: NotRequired[str | None]
     createdAt: str
     updatedAt: str
 
@@ -1342,8 +1344,10 @@ class CreateTemplateRequest(TypedDict):
 class UpdateTemplateRequest(TypedDict, total=False):
     name: str
     body: str
-    header: str
-    footer: str
+    header: str | None
+    footer: str | None
+    type: Literal["text", "image"]
+    mediaUrl: str | None
 
 
 # ── Label (WhatsApp Business) ─────────────────────────────────────
