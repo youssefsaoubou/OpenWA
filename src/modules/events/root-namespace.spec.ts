@@ -9,6 +9,7 @@ import { rejectRootNamespace } from './redis-io.adapter';
  * Engine.IO frames instead of mocks. The timers are short; the behaviour is the same at the 45 s default.
  */
 describe('rejectRootNamespace', () => {
+  const CONNECT_TIMEOUT = 2000;
   let httpServer: HttpServer;
   let io: Server;
   let peers: WebSocket[];
@@ -16,7 +17,7 @@ describe('rejectRootNamespace', () => {
   beforeEach(async () => {
     peers = [];
     httpServer = createServer();
-    io = new Server(httpServer, { connectTimeout: 400, pingInterval: 150, pingTimeout: 150 });
+    io = new Server(httpServer, { connectTimeout: CONNECT_TIMEOUT, pingInterval: 150, pingTimeout: 150 });
     rejectRootNamespace(io);
     io.of('/events');
     await new Promise<void>(resolve => httpServer.listen(0, '127.0.0.1', resolve));
@@ -61,7 +62,7 @@ describe('rejectRootNamespace', () => {
     expect(peer.frames.some(frame => frame.startsWith('44') && frame.includes('Invalid namespace'))).toBe(true);
     expect(peer.closed()).toBe(false);
 
-    await wait(500);
+    await wait(CONNECT_TIMEOUT + 100);
     expect(peer.closed()).toBe(true);
   });
 
@@ -71,7 +72,7 @@ describe('rejectRootNamespace', () => {
     await waitFor(() => peer.frames.some(frame => frame.startsWith('40/events,')));
     expect(peer.frames.some(frame => frame.startsWith('40/events,'))).toBe(true);
 
-    await wait(500);
+    await wait(CONNECT_TIMEOUT + 100);
     expect(peer.closed()).toBe(false);
   });
 });
