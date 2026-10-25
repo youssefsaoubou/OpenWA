@@ -40,17 +40,24 @@ describe('rejectRootNamespace', () => {
       if (frame === '2') ws.send('3');
       if (frame.startsWith('0')) ws.send(connect);
     });
+    ws.on('error', () => {
+      // A failed test can terminate a socket before its handshake completes.
+    });
     ws.on('close', () => {
       closed = true;
     });
     return { frames, closed: () => closed };
   };
   const wait = (ms: number): Promise<void> => new Promise(resolve => setTimeout(resolve, ms));
+  const waitFor = async (condition: () => boolean, timeout = 2000): Promise<void> => {
+    const deadline = Date.now() + timeout;
+    while (!condition() && Date.now() < deadline) await wait(10);
+  };
 
   it('refuses a CONNECT to the root namespace, so the connect timeout closes the peer', async () => {
     const peer = open('40');
 
-    await wait(250);
+    await waitFor(() => peer.frames.some(frame => frame.startsWith('44') && frame.includes('Invalid namespace')));
     expect(peer.frames.some(frame => frame.startsWith('44') && frame.includes('Invalid namespace'))).toBe(true);
     expect(peer.closed()).toBe(false);
 
@@ -61,7 +68,7 @@ describe('rejectRootNamespace', () => {
   it('still admits a peer that joins /events, and keeps it past the connect timeout', async () => {
     const peer = open('40/events,');
 
-    await wait(250);
+    await waitFor(() => peer.frames.some(frame => frame.startsWith('40/events,')));
     expect(peer.frames.some(frame => frame.startsWith('40/events,'))).toBe(true);
 
     await wait(500);

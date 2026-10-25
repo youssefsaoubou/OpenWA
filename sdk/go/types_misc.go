@@ -38,16 +38,16 @@ type AuthValidateResponse struct {
 
 // TemplateRecord is a stored message template with {{variable}} placeholders.
 type TemplateRecord struct {
-	ID        string  `json:"id"`
-	SessionID string  `json:"sessionId"`
-	Name      string  `json:"name"`
-	Body      string  `json:"body"`
-	Header    *string `json:"header,omitempty"`
-	Footer    *string `json:"footer,omitempty"`
+	ID        string       `json:"id"`
+	SessionID string       `json:"sessionId"`
+	Name      string       `json:"name"`
+	Body      string       `json:"body"`
+	Header    *string      `json:"header,omitempty"`
+	Footer    *string      `json:"footer,omitempty"`
 	Type      TemplateType `json:"type"`
-	MediaURL  *string `json:"mediaUrl,omitempty"`
-	CreatedAt string  `json:"createdAt"`
-	UpdatedAt string  `json:"updatedAt"`
+	MediaURL  *string      `json:"mediaUrl,omitempty"`
+	CreatedAt string       `json:"createdAt"`
+	UpdatedAt string       `json:"updatedAt"`
 }
 
 // TemplateType is the message type used by a template.
@@ -74,12 +74,12 @@ type CreateTemplateRequest struct {
 // As value types with `omitempty` they marshalled away, so a Go caller could never clear a header
 // once set — every rendered message kept prepending the old text while the update reported success.
 type UpdateTemplateRequest struct {
-	Name   string  `json:"name,omitempty"`
-	Body   string  `json:"body,omitempty"`
-	Header *string `json:"header,omitempty"`
-	Footer *string `json:"footer,omitempty"`
-	Type   TemplateType `json:"type,omitempty"`
-	MediaURL *string `json:"mediaUrl,omitempty"`
+	Name     string       `json:"name,omitempty"`
+	Body     string       `json:"body,omitempty"`
+	Header   *string      `json:"header,omitempty"`
+	Footer   *string      `json:"footer,omitempty"`
+	Type     TemplateType `json:"type,omitempty"`
+	MediaURL *string      `json:"mediaUrl,omitempty"`
 }
 
 // ── Label (WhatsApp Business) ────────────────────────────────
