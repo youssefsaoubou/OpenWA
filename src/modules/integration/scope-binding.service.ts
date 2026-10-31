@@ -5,6 +5,7 @@ import { Repository } from 'typeorm';
 import { AuditAction } from '../audit/entities/audit-log.entity';
 import { AuditService } from '../audit/audit.service';
 import { PluginLoaderService } from '../../core/plugins/plugin-loader.service';
+import { sessionScopeKey } from '../../core/plugins/plugin-activation';
 import { Session } from '../session/entities/session.entity';
 import { PluginInstanceService } from './plugin-instance.service';
 import { PluginInstance } from './entities/plugin-instance.entity';
@@ -114,15 +115,14 @@ export class ScopeBindingService implements OnApplicationBootstrap {
   async resyncAfterImport(
     previous: ReadonlyArray<{ pluginId: string; sessionScope: string | null; enabled: boolean }>,
   ): Promise<void> {
-    const scopeKey = (scope: string | null): string => (!scope || scope === '*' ? '*' : scope);
     const bound = new Set(
       (await this.instances.listAll())
         .filter(row => row.enabled)
-        .map(row => `${row.pluginId}\u0000${scopeKey(row.sessionScope)}`),
+        .map(row => `${row.pluginId}\u0000${sessionScopeKey(row.sessionScope)}`),
     );
     const retired = new Map<string, { pluginId: string; sessionScope: string | null }>();
     for (const row of previous) {
-      const key = `${row.pluginId}\u0000${scopeKey(row.sessionScope)}`;
+      const key = `${row.pluginId}\u0000${sessionScopeKey(row.sessionScope)}`;
       if (row.enabled && !bound.has(key)) retired.set(key, row);
     }
     for (const { pluginId, sessionScope } of retired.values()) {
@@ -198,6 +198,9 @@ export class ScopeBindingService implements OnApplicationBootstrap {
     opts: { additive?: boolean; previousConfig?: Record<string, unknown> | null } = {},
   ): Promise<void> {
     try {
+      // A global (sessionScoped: false) plugin has no session activation or per-session config, and the loader
+      // refuses both; dispatch layers each instance's own row for it. Only a wildcard's base config applies.
+      const globalPlugin = this.loader.getPlugin(pluginId)?.manifest.sessionScoped === false;
       if (!scope || scope === '*') {
         // 'all sessions' → base config + activate ['*']. The merged base config cannot be cleanly torn
         // down (updatePluginConfig merges, so one instance's keys aren't separable), but the '*'
@@ -209,11 +212,12 @@ export class ScopeBindingService implements OnApplicationBootstrap {
             ...(await this.retractedSecrets(pluginId, config, opts.previousConfig)),
             ...config,
           });
-          this.loader.setPluginSessions(pluginId, ['*']);
+          if (!globalPlugin) this.loader.setPluginSessions(pluginId, ['*']);
           return;
         }
         const retracted = await this.retractedSecrets(pluginId, {}, opts.previousConfig);
         if (Object.keys(retracted).length > 0) this.loader.updatePluginConfig(pluginId, retracted);
+        if (globalPlugin) return;
         const rows = await this.instances.list(pluginId);
         const anyWildcardLeft = rows.some(i => i.enabled && (!i.sessionScope || i.sessionScope === '*'));
         if (!anyWildcardLeft) {
@@ -225,6 +229,7 @@ export class ScopeBindingService implements OnApplicationBootstrap {
         }
         return;
       }
+      if (globalPlugin) return;
       // Concrete scope → per-session config + toggle that session in activeSessions. Mirror the
       // wildcard path's retirement guard in BOTH directions: runtime state a still-ENABLED sibling
       // instance depends on must survive this instance's change. The controller persists the row

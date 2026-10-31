@@ -917,6 +917,7 @@ export enum EngineStatus {
 export interface EngineEventCallbacks {
   onQRCode?: (qr: string) => void;
   onReady?: (phone: string, pushName: string) => void;
+  onPushNameChanged?: (pushName: string) => void; // the account's own name synced after onReady (Baileys)
   admitInbound?: (arrival: {
     id: string;
     chatId: string;
@@ -936,6 +937,7 @@ export interface EngineEventCallbacks {
   onMessageReaction?: (event: ReactionEvent) => void;
   onMessageEdited?: (message: EditedMessage) => void;
   onEventResponse?: (event: EventResponseEvent) => void; // an RSVP to a WhatsApp event; Baileys only
+  onPollVote?: (event: PollVoteEvent) => void; // a voter's new selection on a poll; whatsapp-web.js only
   onGroupEvent?: (event: GroupEvent) => void; // kind selects group.join / group.leave / group.update / group.join_request
   onCall?: (event: IncomingCallEvent) => void; // incoming call ringing; Baileys can rejectCall() while it rings
   onHistoryMessages?: (messages: IncomingMessage[]) => void | Promise<IncomingMessage[] | void>; // bulk initial sync; persist, don't dispatch

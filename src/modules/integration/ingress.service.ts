@@ -50,13 +50,7 @@ export interface IngressDeps {
       pluginId: string;
       providerDeliveryId: string;
       route: string;
-      payload: {
-        headers: Record<string, string>;
-        query: Record<string, string>;
-        body: string;
-        rawBody: string;
-        method?: string;
-      };
+      payload: IngressJobData['payload'] & { method?: string };
       payloadHash: string;
       sessionId: string | null;
     }): Promise<boolean>;
@@ -238,6 +232,9 @@ export class IngressService {
     // A shared-secret route carries the instance secret itself in its declared header, and an hmac
     // route's declared header carries a signature that is only useful to re-send the same body.
     const payload = {
+      // Every authenticating scheme has passed by here; a `none` route authenticates nothing. Recorded now
+      // because a plugin update can change the scheme before a queued or replayed delivery runs.
+      admission: { verified: route.signature.scheme !== 'none' },
       headers: redactSensitiveHeaders(
         req.headers,
         route.signature.scheme === 'shared-secret' || route.signature.scheme === 'hmac-sha256'
@@ -320,10 +317,17 @@ const MAX_DELIVERY_ID_LENGTH = 255;
  * Derives a DETERMINISTIC delivery id when the provider sends no dedup header, so a provider retry of
  * the same delivery dedups instead of being treated as new. A random UUID would silently disable both
  * the persist-dedup and BullMQ's jobId idempotency, causing duplicate downstream WhatsApp sends. Keyed
- * on pluginId + instanceId + route + rawBody ONLY — never a server timestamp, which would defeat dedup.
+ * on pluginId + instanceId + route + rawBody, plus the method and query when the body is empty; never a
+ * server timestamp, which would defeat dedup.
  */
 function deriveDeliveryId(req: IngressRequest): string {
-  return createHash('sha256').update([req.pluginId, req.instanceId, req.route, req.rawBody].join('\0')).digest('hex');
+  const parts = [req.pluginId, req.instanceId, req.route, req.rawBody];
+  // A delivery carried in the query string (a GET callback, a bodiless POST) is identified by its query: the
+  // empty body alone gave every one of them the same id, so all but the first were acked and dropped. Only that
+  // case adds it, so every other delivery keeps the id it had. Sorted by code point, not locale: the id is stored.
+  const query = Object.entries(req.query).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+  if (req.rawBody === '' && query.length > 0) parts.push(req.method, JSON.stringify(query));
+  return createHash('sha256').update(parts.join('\0')).digest('hex');
 }
 
 /**
@@ -344,8 +348,15 @@ export function extractConversationId(
   if (spec.jsonPointer) {
     try {
       let node: unknown = JSON.parse(rawBody);
-      for (const seg of spec.jsonPointer.split('/').filter(Boolean)) {
-        node = (node as Record<string, unknown>)?.[seg];
+      // RFC 6901: an empty token is a key, `~1` and `~0` stand for `/` and `~`, and an array takes only an
+      // index. A pointer written without its leading slash keeps resolving as it did.
+      const path = spec.jsonPointer.startsWith('/') ? spec.jsonPointer.slice(1) : spec.jsonPointer;
+      for (const token of path.split('/')) {
+        if (/~(?:[^01]|$)/.test(token)) return undefined;
+        const key = token.replace(/~1/g, '/').replace(/~0/g, '~');
+        if (node === null || typeof node !== 'object' || !Object.hasOwn(node, key)) return undefined;
+        if (Array.isArray(node) && !/^(0|[1-9][0-9]*)$/.test(key)) return undefined;
+        node = (node as Record<string, unknown>)[key];
       }
       // Only a scalar is a usable conversation key — an object/array would stringify to junk.
       if (typeof node === 'string') return node;
@@ -372,6 +383,7 @@ const SENSITIVE_INGRESS_HEADERS = new Set([
   'x-signature',
   'x-signature-ed25519',
   'x-webhook-signature',
+  'webhook-signature',
 ]);
 
 export function redactSensitiveHeaders(

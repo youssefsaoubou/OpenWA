@@ -26,6 +26,8 @@ import {
   BatchMessageResult,
 } from './entities/message-batch.entity';
 import { SendBulkMessageDto } from './dto/bulk-message.dto';
+import { MENTIONS_MAX, MENTION_WID_MAX_LENGTH } from './dto/send-message.dto';
+import { isMentionWid } from './dto/is-mention-wid.validator';
 import { isMediaUrl } from '../../common/media/media-url';
 import { MessageStatus } from './entities/message.entity';
 import { EngineRegistry } from '../../engine/engine-registry.service';
@@ -58,6 +60,14 @@ interface BulkMessageContent {
   video?: { url?: string; base64?: string; mimetype?: string; filename?: string };
   audio?: { url?: string; base64?: string; mimetype?: string; filename?: string; ptt?: boolean };
   document?: { url?: string; base64?: string; mimetype?: string; filename?: string };
+}
+
+/**
+ * The type a bulk item is reported and stored as: an audio item flagged ptt is a voice note, so the send
+ * hooks and the stored row say 'voice', as they do for a single voice send.
+ */
+function messageTypeOf(type: string, content: BulkMessageContent): string {
+  return type === 'audio' && content.audio?.ptt ? 'voice' : type;
 }
 
 /**
@@ -653,7 +663,11 @@ export class BulkMessageService implements OnModuleInit, OnApplicationBootstrap,
       // decide; a rewritten chatId is ignored, the item always goes to its own msg.chatId.
       const gate = await this.hookManager.execute(
         'message:sending',
-        { sessionId: batch.sessionId, input: { ...content, chatId: msg.chatId }, type: msg.type },
+        {
+          sessionId: batch.sessionId,
+          input: { ...content, chatId: msg.chatId },
+          type: messageTypeOf(msg.type, content),
+        },
         { sessionId: batch.sessionId, source: 'BulkMessageService' },
       );
       if (!gate.continue) {
@@ -755,7 +769,7 @@ export class BulkMessageService implements OnModuleInit, OnApplicationBootstrap,
             sessionId: batch.sessionId,
             error: sanitized.message,
             input: { ...content, chatId: msg.chatId },
-            type: msg.type,
+            type: messageTypeOf(msg.type, content),
           },
           { sessionId: batch.sessionId, source: 'BulkMessageService' },
         );
@@ -915,6 +929,20 @@ export class BulkMessageService implements OnModuleInit, OnApplicationBootstrap,
    * creation (a 400) and again per item after variables and the message:sending gate.
    */
   private assertItemContent(type: string, content: BulkMessageContent, beforeRender = false): void {
+    // A mention may be a placeholder until it is rendered, so the DTO accepts it unchecked. What is sent is
+    // held to the single-send rule: a malformed WID reaches the engine as an opaque failure otherwise.
+    const mentions = content?.mentions;
+    if (
+      !beforeRender &&
+      mentions != null &&
+      (!Array.isArray(mentions) ||
+        mentions.length > MENTIONS_MAX ||
+        Array.from(mentions).some(
+          wid => typeof wid !== 'string' || wid.length > MENTION_WID_MAX_LENGTH || !isMentionWid(wid),
+        ))
+    ) {
+      throw new BadRequestException('content.mentions must contain bounded individual WIDs');
+    }
     if (type === 'text') {
       if (typeof content?.text !== 'string' || !content.text) {
         throw new BadRequestException('A text item requires a non-empty content.text');
@@ -1059,8 +1087,6 @@ export class BulkMessageService implements OnModuleInit, OnApplicationBootstrap,
     // media item (audio carries none). Other keys on the item were never delivered.
     const media = type === 'text' ? undefined : content[type as 'image' | 'video' | 'audio' | 'document'];
     const body = type === 'text' ? content.text : type === 'audio' ? undefined : content.caption;
-    // A bulk audio item flagged ptt is a voice note; store it in the 'voice' bucket like inbound PTT.
-    const persistType = type === 'audio' && content.audio?.ptt ? 'voice' : type;
     try {
       await this.messageService.saveOutgoingMessage(
         sessionId,
@@ -1068,7 +1094,7 @@ export class BulkMessageService implements OnModuleInit, OnApplicationBootstrap,
           waMessageId: result.id,
           chatId,
           body: body ?? '',
-          type: persistType,
+          type: messageTypeOf(type, content),
           timestamp: result.timestamp,
           status: MessageStatus.SENT,
           metadata: media

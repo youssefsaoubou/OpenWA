@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   UserCheck,
@@ -27,11 +27,17 @@ import { useRole } from '../hooks/useRole';
 import { batchStopMessage, useNumberCheck, type CheckResultItem } from '../hooks/useNumberCheck';
 import { escapeCsvCell } from '../utils/csv';
 import { normalizePhoneText } from '../utils/phone';
+import { keepsSameKey } from '../utils/authLifecycle';
+import { isComposingKey } from '../utils/composition';
 import './NumberChecker.css';
 
 // Every lookup is an outbound WhatsApp query that counts against the gateway's per-IP limit on this route
 // (100 a minute by default) and against the linked account's standing, so one run is capped.
 export const NUMBER_CHECK_BATCH_MAX = 100;
+
+// The most digits a phone number has (E.164). Spaces are formatting inside one number, so two whole numbers on one line
+// fold into a longer run of digits: such an entry is refused, never looked up as a number nobody typed.
+const PHONE_MAX_DIGITS = 15;
 
 const timeOfDay = (iso: string) => new Date(iso).toLocaleTimeString();
 
@@ -75,6 +81,14 @@ export function NumberChecker() {
   // The session a running bulk run is bound to. Both selects are locked meanwhile, so they keep showing it even if
   // the chosen session leaves the ready list and returns during the run, and a single check goes to it too.
   const shownSession = isCheckingBatch ? run.session : currentSession;
+  const singleRun = useRef(0);
+  useEffect(() => {
+    singleRun.current += 1;
+    setIsCheckingSingle(false);
+    return () => {
+      singleRun.current += 1;
+    };
+  }, [shownSession]);
   const [batchFilter, setBatchFilter] = useState<'all' | 'registered' | 'unregistered' | 'failed'>('all');
 
   // Opt-in: the +91 rewrite would turn any other country's 10-digit or 0-prefixed number into an Indian one.
@@ -113,21 +127,29 @@ export function NumberChecker() {
     return formatNumberForCheck(phoneNumber);
   }, [phoneNumber, formatNumberForCheck]);
   const singleTypedDigits = normalizePhoneText(phoneNumber).replace(/[^0-9]/g, '');
+  const singleTooLong = singleFormattedNumber.length > PHONE_MAX_DIGITS;
 
   // Batch parsing statistics
   const batchParsedStats = useMemo(() => {
     const lines = normalizePhoneText(batchInput)
-      .split(/[\n,;\u060C\u061B]+/)
+      .split(/[\n,;\t\u060C\u061B]+/)
       .map(n => n.trim())
       .filter(n => n.length > 0);
 
     let tenDigitsCount = 0;
     let twelveDigitsCount = 0;
     let otherCount = 0;
+    let tooLongCount = 0;
 
     const uniqueFormatted = new Set<string>();
 
     for (const raw of lines) {
+      // Measured after the 00 strip and the +91 rewrite, so a 00-prefixed full-length number is still one number.
+      const formatted = formatNumberForCheck(raw, autoPrefix91);
+      if (formatted.length > PHONE_MAX_DIGITS) {
+        tooLongCount++;
+        continue;
+      }
       let d = raw.replace(/[^0-9]/g, '');
       const isInternational = raw.startsWith('+') || d.startsWith('00');
       if (d.startsWith('00') && d.length >= 12) d = d.substring(2);
@@ -141,7 +163,6 @@ export function NumberChecker() {
       } else if (d.length >= 7) {
         otherCount++;
       }
-      const formatted = formatNumberForCheck(raw, autoPrefix91);
       if (formatted.length >= 7) {
         uniqueFormatted.add(formatted);
       }
@@ -153,6 +174,7 @@ export function NumberChecker() {
       tenDigitsCount,
       twelveDigitsCount,
       otherCount,
+      tooLongCount,
       list: Array.from(uniqueFormatted),
     };
   }, [batchInput, autoPrefix91, formatNumberForCheck]);
@@ -166,14 +188,22 @@ export function NumberChecker() {
       toast.error(t('numberChecker.toast.enterNumber'));
       return;
     }
+    if (formatted.length > PHONE_MAX_DIGITS) {
+      toast.error(t('numberChecker.single.tooLong', { max: PHONE_MAX_DIGITS }));
+      return;
+    }
     if (!shownSession) {
       toast.error(t('numberChecker.toast.noSession'));
       return;
     }
 
+    const request = ++singleRun.current;
+    const sameKey = keepsSameKey();
+    const isCurrent = () => singleRun.current === request && sameKey();
     setIsCheckingSingle(true);
     try {
       const res = await contactApi.checkNumber(shownSession, formatted);
+      if (!isCurrent()) return;
       let avatar: string | null = null;
       if (res.exists && res.whatsappId) {
         try {
@@ -184,6 +214,7 @@ export function NumberChecker() {
         }
       }
 
+      if (!isCurrent()) return;
       const item: CheckResultItem = {
         ...res,
         status: res.exists ? 'registered' : 'unregistered',
@@ -195,12 +226,13 @@ export function NumberChecker() {
       setSingleResult(item);
       setRecentChecks(prev => [item, ...prev.filter(p => p.number !== item.number).slice(0, 9)]);
     } catch (err) {
+      if (!isCurrent()) return;
       toast.error(
         t('numberChecker.toast.checkFailed'),
         err instanceof Error ? err.message : t('numberChecker.toast.unknownError'),
       );
     } finally {
-      setIsCheckingSingle(false);
+      if (singleRun.current === request) setIsCheckingSingle(false);
     }
   };
 
@@ -360,14 +392,20 @@ export function NumberChecker() {
                     value={phoneNumber}
                     onChange={e => setPhoneNumber(e.target.value)}
                     onKeyDown={e => {
-                      if (e.key === 'Enter') handleSingleCheck();
+                      if (e.key === 'Enter' && !isComposingKey(e.nativeEvent)) handleSingleCheck();
                     }}
                     disabled={isCheckingSingle}
                   />
                   <button
                     className="nc-btn nc-btn-primary"
                     onClick={handleSingleCheck}
-                    disabled={!canWrite || isCheckingSingle || !phoneNumber.trim() || readySessions.length === 0}
+                    disabled={
+                      !canWrite ||
+                      isCheckingSingle ||
+                      !phoneNumber.trim() ||
+                      singleTooLong ||
+                      readySessions.length === 0
+                    }
                   >
                     {isCheckingSingle ? <Loader2 size={18} className="animate-spin" /> : <Search size={18} />}
                     {isCheckingSingle ? t('numberChecker.single.checking') : t('numberChecker.single.check')}
@@ -387,7 +425,12 @@ export function NumberChecker() {
                   </span>
                 </label>
 
-                {phoneNumber.trim() && (
+                {phoneNumber.trim() && singleTooLong && (
+                  <span className="nc-batch-limit" role="status">
+                    {t('numberChecker.single.tooLong', { max: PHONE_MAX_DIGITS })}
+                  </span>
+                )}
+                {phoneNumber.trim() && !singleTooLong && (
                   <div className="nc-format-preview">
                     {singleTypedDigits.length === 10 && singleFormattedNumber === '91' + singleTypedDigits ? (
                       <span className="nc-format-pill highlight">
@@ -694,6 +737,11 @@ export function NumberChecker() {
                 ) : (
                   <span className="nc-hint">
                     {t('numberChecker.bulk.numbersHint', { max: NUMBER_CHECK_BATCH_MAX })}
+                  </span>
+                )}
+                {batchParsedStats.tooLongCount > 0 && (
+                  <span className="nc-batch-limit" role="status">
+                    {t('numberChecker.bulk.tooLong', { max: PHONE_MAX_DIGITS, count: batchParsedStats.tooLongCount })}
                   </span>
                 )}
                 {batchOverLimit && (

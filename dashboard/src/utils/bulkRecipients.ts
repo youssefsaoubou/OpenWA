@@ -32,6 +32,10 @@ export const BULK_RECIPIENTS_FILE_MAX_BYTES = 2 * 1024 * 1024;
  */
 const FIELD_SEPARATORS = /[,;\t\u060C\u061B]/;
 
+// A quote at the edge of a field is the CSV quoting of a cell, never part of a chat id: `"123@g.us"` is the chat id
+// 123@g.us. Quotes are not tracked across fields or lines, so one that never closes cannot swallow what follows it.
+const stripEdgeQuotes = (field: string): string => field.replace(/^"/, '').replace(/"$/, '').trim();
+
 /**
  * Fewest digits a bare number may carry to be treated as a phone number, matching the bound the
  * gateway and the session form already enforce (`/^[0-9]{6,15}$/`).
@@ -40,6 +44,13 @@ const FIELD_SEPARATORS = /[,;\t\u060C\u061B]/;
  * index column alongside the number, and without a floor that `1` would ship as `1@c.us`.
  */
 const MIN_PHONE_DIGITS = 6;
+
+/**
+ * Most digits a phone number has (E.164). Spaces are formatting inside one number, so two whole numbers on one line
+ * fold into one run of digits; a run past this bound is no number anybody typed and is dropped, never sent. A leading
+ * 00 is not stripped here, so a 00-prefixed number of 15 digits is dropped too rather than sent with its exit code.
+ */
+const MAX_PHONE_DIGITS = 15;
 
 /**
  * A full chat id: a numeric user part (a device suffix or group hyphen allowed) on a WhatsApp
@@ -60,11 +71,12 @@ export function parseBulkRecipients(text: string): string[] {
       const field = rawField.trim();
       if (!field) continue;
       if (field.includes('@')) {
-        if (CHAT_ID.test(field)) seen.add(field);
+        const id = stripEdgeQuotes(field);
+        if (CHAT_ID.test(id)) seen.add(id);
         continue;
       }
       const digits = field.replace(/[^0-9]/g, '');
-      if (digits.length >= MIN_PHONE_DIGITS) seen.add(`${digits}@c.us`);
+      if (digits.length >= MIN_PHONE_DIGITS && digits.length <= MAX_PHONE_DIGITS) seen.add(`${digits}@c.us`);
     }
   }
   return [...seen];

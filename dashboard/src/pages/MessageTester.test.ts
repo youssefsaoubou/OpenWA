@@ -366,22 +366,24 @@ test('the recipient list is parsed when it changes, not on every other keystroke
   await rtl.screen.findByRole('option', { name: /Main/ });
   rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Bulk' }));
 
-  // Count the line splits of the list. Swapped by hand: the test runner does not restore a symbol-keyed method.
+  // Count the phone normalization of the list: a textarea value read replaces other patterns in the same text.
   const list = '628111222333\n628222333444';
-  let parses = 0;
-  const split = RegExp.prototype[Symbol.split];
-  RegExp.prototype[Symbol.split] = function (this: RegExp, text: string, limit?: number) {
-    if (text === list) parses++;
-    return split.call(this, text, limit);
+  const fullWidth = /[\uFF01-\uFF5E]/g;
+  let normalizations = 0;
+  const replace = RegExp.prototype[Symbol.replace];
+  RegExp.prototype[Symbol.replace] = function (this: RegExp, text: string, replacement: unknown): string {
+    if (text === list && this.source === fullWidth.source && this.flags === fullWidth.flags) normalizations++;
+    return Reflect.apply(replace, this, [text, replacement]) as string;
   };
   try {
     type(container, '#mt-11', list);
-    const afterList = parses;
-    assert.ok(afterList >= 1, 'the list was not parsed');
+    assert.ok(rtl.screen.getByText(/Recipients: 2$/));
+    const afterList = normalizations;
+    assert.ok(afterList >= 1, 'the list was not normalized');
     for (const text of ['a', 'ab', 'abc']) type(container, '#mt-12', text);
-    assert.equal(parses, afterList);
+    assert.equal(normalizations, afterList);
   } finally {
-    RegExp.prototype[Symbol.split] = split;
+    RegExp.prototype[Symbol.replace] = replace;
   }
 });
 
@@ -1096,6 +1098,57 @@ for (const [script, zero] of [
       rtl.fireEvent.click(sendButton());
       await rtl.waitFor(() => assert.equal(checked.length, 2));
       assert.deepEqual(checked, ['15550000001', '15550000002']);
+    } finally {
+      client.clear();
+      sessionStorage.removeItem('openwa_api_key');
+    }
+  });
+}
+
+// A space inside a number is formatting, so two numbers pasted with a space between them read as one run of digits.
+// No phone number has more than 15, so such a run is refused before the number check rather than looked up or split.
+for (const field of ['recipient', 'forward target'] as const) {
+  test(`a ${field} longer than any phone number is refused without a lookup or a send`, async () => {
+    const checked: string[] = [];
+    const sent: string[] = [];
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/sessions')) return jsonResponse([{ id: 's1', name: 'Main', status: 'ready' }]);
+      if (path.includes('/contacts/check/')) {
+        const number = path.split('/contacts/check/')[1];
+        checked.push(number);
+        return jsonResponse({ number, exists: true, whatsappId: `${number}@c.us` });
+      }
+      if (path.includes('/messages/')) {
+        sent.push(path);
+        return jsonResponse({ messageId: 'sent', timestamp: 1 });
+      }
+      return jsonResponse([]);
+    }) as typeof fetch;
+    sessionStorage.setItem('openwa_api_key', 'original-key');
+    sessionStorage.setItem('openwa_user_role', 'operator');
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 1 } } });
+    const view = rtl.render(
+      createElement(QueryClientProvider, { client }, createElement(RoleProvider, null, createElement(MessageTester))),
+    );
+    try {
+      await rtl.screen.findByRole('option', { name: /Main/ });
+      const joined = '628111222333 628222333444';
+      // A formatted number of 13 digits is still one number.
+      type(view.container, '#mt-13', field === 'recipient' ? joined : '+62 812 3456 7890');
+      if (field === 'recipient') {
+        type(view.container, '#mt-2', 'hello');
+      } else {
+        rtl.fireEvent.click(rtl.screen.getByRole('button', { name: 'Forward' }));
+        type(view.container, '#mt-9', joined);
+        type(view.container, '#mt-10', 'original-message');
+      }
+      await rtl.waitFor(() => assert.equal(sendButton().disabled, false));
+      rtl.fireEvent.click(sendButton());
+      // The refusal names its reason: the number was never looked up, so nothing is said about its registration.
+      await rtl.screen.findByText('More than 15 digits is not one phone number. Enter one number.');
+      assert.deepEqual(checked, field === 'recipient' ? [] : ['6281234567890'], 'the joined digits were looked up');
+      assert.deepEqual(sent, [], 'a message was sent');
     } finally {
       client.clear();
       sessionStorage.removeItem('openwa_api_key');

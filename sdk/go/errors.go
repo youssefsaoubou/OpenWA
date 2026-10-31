@@ -56,21 +56,24 @@ var (
 	// because WhatsApp may never answer that query, so bound any retry.
 	//
 	// On a send or a single write, a throttle turned the request away before it
-	// ran, so nothing was sent or applied, and a keyed send frees its
-	// Idempotency-Key for the retry. A group settings update with several
-	// fields applies them one at a time, so a 503 on a later field, a throttle
-	// included, leaves the earlier ones applied; the message lists them after
-	// "already applied:", so re-read the settings before retrying, or send one
-	// field per request. A timeout proves nothing: the write may still have
-	// been applied, and a keyed send keeps its key taken. The non-idempotent
-	// sends are deliberately left unbounded by the gateway so a slow WhatsApp
-	// reply never answers one, and in a multi-node deployment a forward that
-	// fails before reaching the owner node answers 503. A 503 from the owner
-	// itself is relayed unchanged and keeps its meaning, so a bounded write
-	// that timed out may still have been applied; re-read the state before
-	// repeating it. A forward that fails after the request was sent answers 502
-	// or 504 instead: the owner may already have carried it out, so do not
-	// repeat a non-idempotent send on those unchecked.
+	// ran, so nothing was sent or applied. A send also sent nothing when its
+	// recipient lookup failed, its connection closed before the message was
+	// written, or its media or preview image URL could not be fetched through
+	// the session's proxy. Each of these frees a keyed send's Idempotency-Key
+	// for the retry. A group settings update with several fields applies them
+	// one at a time, so a 503 on a later field, a throttle included, leaves the
+	// earlier ones applied; the message lists them after "already applied:", so
+	// re-read the settings before retrying, or send one field per request. Any
+	// other timeout proves nothing: the write may still have been applied, and a
+	// keyed send keeps its key taken. The non-idempotent sends are deliberately
+	// left unbounded by the gateway so a slow WhatsApp reply never answers one,
+	// and in a multi-node deployment a forward that fails before reaching the
+	// owner node answers 503. A 503 from the owner itself is relayed unchanged
+	// and keeps its meaning, so a bounded write that timed out may still have
+	// been applied; re-read the state before repeating it. A forward that fails
+	// after the request was sent answers 502 or 504 instead: the owner may
+	// already have carried it out, so do not repeat a non-idempotent send on
+	// those unchecked.
 	ErrServiceUnavailable = errors.New("openwa: service unavailable")
 )
 
@@ -97,7 +100,9 @@ type APIError struct {
 	Code string
 	// RetryAfter is how long to wait before retrying: the body's
 	// retryAfterSeconds when present, else the Retry-After header (seconds or
-	// an HTTP date). Zero when the response names no delay.
+	// an HTTP date). Zero when the response names no delay. A delay too long
+	// for a time.Duration is reported as the largest Duration (about 292
+	// years), a sentinel for "do not retry", not the delay the server named.
 	RetryAfter time.Duration
 	// Header is the response header.
 	Header http.Header
@@ -175,7 +180,11 @@ func parseAPIError(status int, raw []byte, context string, header http.Header) *
 	// The body's retryAfterSeconds wins: send pacing puts its wait (possibly
 	// hours) only there, and a header added by a proxy must not shorten it.
 	if secs, ok := fields["retryAfterSeconds"].(float64); ok && secs >= 0 {
-		apiErr.RetryAfter = time.Duration(secs * float64(time.Second))
+		if nanos := secs * float64(time.Second); nanos >= float64(maxRetryAfter) {
+			apiErr.RetryAfter = maxRetryAfter
+		} else {
+			apiErr.RetryAfter = time.Duration(nanos)
+		}
 	} else if d, ok := retryAfterHeader(header); ok {
 		apiErr.RetryAfter = d
 	}

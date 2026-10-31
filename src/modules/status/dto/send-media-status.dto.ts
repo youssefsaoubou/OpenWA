@@ -25,14 +25,13 @@ class StatusMediaInput {
   @ValidateIf((media: StatusMediaInput) => media.base64 === undefined || media.url !== undefined)
   @ToStrictString()
   @IsString()
-  @IsNotEmpty()
   // base64 wins when both are sent, so a url next to it is not fetched and not checked; a base64 that is
   // only a data-URI prefix strips to nothing, and then the url is what gets sent.
   @IsMediaUrl<StatusMediaInput>({ ignoreWhen: media => !!stripBase64DataUri(media.base64) })
   url?: string;
 
   @ApiPropertyOptional({
-    description: 'Base64-encoded media. Requires mimetype.',
+    description: 'Base64-encoded media.',
     example: '/9j/4AAQSkZJRg...',
   })
   @ValidateIf((media: StatusMediaInput) => media.url === undefined || media.base64 !== undefined)
@@ -41,7 +40,12 @@ class StatusMediaInput {
   @IsNotEmpty()
   base64?: string;
 
-  @ApiPropertyOptional({ description: 'MIME type. Required when sending base64.', example: 'image/jpeg' })
+  @ApiPropertyOptional({
+    description:
+      "MIME type. Optional: when omitted, the endpoint's default applies (image/jpeg, video/mp4, or " +
+      'audio/ogg; codecs=opus for a voice note).',
+    example: 'image/jpeg',
+  })
   @IsOptional()
   @ToStrictString()
   @IsString()

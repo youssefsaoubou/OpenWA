@@ -171,6 +171,30 @@ describe('MessageSendService', () => {
   // ── sendText ──────────────────────────────────────────────────────
 
   describe('auto-typing before send (SIMULATE_TYPING, on by default)', () => {
+    it.each([
+      ['caps positive jitter', 'x'.repeat(100), 0.999999, 5000],
+      ['keeps negative jitter', 'x'.repeat(100), 0, 4250],
+      ['keeps an uncapped short pause', 'hi', 0.5, 590],
+    ] as const)('%s at the configured typing delay', async (_label, text, random, delay) => {
+      jest.useFakeTimers();
+      const randomValue = jest.spyOn(Math, 'random').mockReturnValue(random);
+      delete process.env.SIMULATE_TYPING;
+      process.env.SIMULATE_TYPING_MAX_MS = '5000';
+      const sending = service.sendText('sess-1', { chatId: '628123456789@c.us', text });
+      try {
+        await jest.advanceTimersByTimeAsync(delay - 1);
+        expect(mockEngine.sendTextMessage).not.toHaveBeenCalled();
+        await jest.advanceTimersByTimeAsync(1);
+        expect(mockEngine.sendTextMessage).toHaveBeenCalledTimes(1);
+        await sending;
+      } finally {
+        await jest.runOnlyPendingTimersAsync();
+        await sending;
+        randomValue.mockRestore();
+        jest.useRealTimers();
+      }
+    });
+
     it('sends a typing presence before the message by default', async () => {
       delete process.env.SIMULATE_TYPING; // default = on
       process.env.SIMULATE_TYPING_MAX_MS = '1'; // keep the humanising delay ~instant in tests
@@ -257,6 +281,92 @@ describe('MessageSendService', () => {
         undefined,
         { customPreview: { url: 'https://example.com', title: 'Example', description: 'A site' } },
       );
+    });
+
+    // The engine decodes plain base64 only, and a URL next to a base64 is not fetched, as on the media routes.
+    it('hands the engine a preview image as plain base64, dropping a URL beside it', async () => {
+      const input = {
+        chatId: '628123456789@c.us',
+        text: 'see https://example.com',
+        customLinkPreview: {
+          url: 'https://example.com',
+          title: 'Example',
+          thumbnailUrl: 'https://cdn.example/a.png',
+          thumbnailBase64: 'data:image/png;base64,AAAA',
+        },
+      };
+      (hookManager.execute as jest.Mock).mockResolvedValueOnce({
+        continue: true,
+        data: { sessionId: 'sess-1', input, type: 'text' },
+      });
+
+      await service.sendText('sess-1', input);
+
+      expect(mockEngine.sendTextMessage).toHaveBeenCalledWith(
+        '628123456789@c.us',
+        'see https://example.com',
+        undefined,
+        {
+          customPreview: { url: 'https://example.com', title: 'Example', thumbnailBase64: 'AAAA' },
+        },
+      );
+    });
+
+    // The DTO's @IsOptional lets an explicit null through, so the service reads it as absent too.
+    it('sends a preview whose image fields are null as one without an image', async () => {
+      const input = {
+        chatId: '628123456789@c.us',
+        text: 'see https://example.com',
+        customLinkPreview: { url: 'https://example.com', title: 'Example', thumbnailUrl: null, thumbnailBase64: null },
+      } as unknown as SendTextMessageDto;
+      (hookManager.execute as jest.Mock).mockResolvedValueOnce({
+        continue: true,
+        data: { sessionId: 'sess-1', input, type: 'text' },
+      });
+
+      await service.sendText('sess-1', input);
+
+      expect(mockEngine.sendTextMessage).toHaveBeenCalledWith(
+        '628123456789@c.us',
+        'see https://example.com',
+        undefined,
+        { customPreview: { url: 'https://example.com', title: 'Example' } },
+      );
+    });
+
+    it('refuses a preview image over the thumbnail cap with a 413, before reaching the engine', async () => {
+      const input = {
+        chatId: '628123456789@c.us',
+        text: 'hi',
+        customLinkPreview: {
+          url: 'https://example.com',
+          title: 'Example',
+          thumbnailBase64: Buffer.alloc(5 * 1024 * 1024 + 1).toString('base64'),
+        },
+      };
+      (hookManager.execute as jest.Mock).mockResolvedValueOnce({
+        continue: true,
+        data: { sessionId: 'sess-1', input, type: 'text' },
+      });
+
+      await expect(service.sendText('sess-1', input)).rejects.toBeInstanceOf(PayloadTooLargeException);
+      expect(mockEngine.sendTextMessage).not.toHaveBeenCalled();
+    });
+
+    // The MCP tool calls this without the ValidationPipe, so the service holds the URL rule too.
+    it('refuses a preview image URL that is not http(s), before reaching the engine', async () => {
+      const input = {
+        chatId: '628123456789@c.us',
+        text: 'hi',
+        customLinkPreview: { url: 'https://example.com', title: 'Example', thumbnailUrl: 'file:///etc/passwd' },
+      };
+      (hookManager.execute as jest.Mock).mockResolvedValueOnce({
+        continue: true,
+        data: { sessionId: 'sess-1', input, type: 'text' },
+      });
+
+      await expect(service.sendText('sess-1', input)).rejects.toBeInstanceOf(BadRequestException);
+      expect(mockEngine.sendTextMessage).not.toHaveBeenCalled();
     });
 
     // Suppressing the preview and supplying one are opposite requests; guessing which was meant

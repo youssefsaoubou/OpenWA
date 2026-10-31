@@ -11,6 +11,7 @@ use GuzzleHttp\Exception\NetworkTimeoutException;
 use GuzzleHttp\Exception\RequestException;
 use GuzzleHttp\Exception\ResponseException;
 use GuzzleHttp\Exception\ResponseTimeoutException;
+use GuzzleHttp\Psr7\Request;
 use OpenWA\Exceptions\OpenWAApiException;
 use OpenWA\Exceptions\OpenWAException;
 use OpenWA\Exceptions\OpenWATimeoutException;
@@ -157,13 +158,24 @@ class HttpExecutor
      * @param array<string,mixed>  $query   Query parameters (null values skipped).
      * @param mixed|null           $body    JSON-serializable request body.
      *
+     * @param bool                 $allowText Return a 2xx body that is not JSON as its text. Off for the typed
+     *                                        resources, whose callers expect an array: they get an exception that
+     *                                        names the request, not a TypeError from the return type.
+     *
      * @return mixed Decoded JSON, or null for empty/204 responses.
      *
      * @throws OpenWAApiException  On any non-2xx response (typed subclass).
      * @throws OpenWATimeoutException On timeout.
+     * @throws OpenWAException On a 2xx body that is not JSON, unless $allowText.
      */
-    public function request(string $method, string $path, array $query = [], $body = null, ?string $idempotencyKey = null)
-    {
+    public function request(
+        string $method,
+        string $path,
+        array $query = [],
+        $body = null,
+        ?string $idempotencyKey = null,
+        bool $allowText = false
+    ) {
         $response = $this->send($method, $path, $query, $body, $idempotencyKey);
 
         $text = (string) $response->getBody();
@@ -172,7 +184,13 @@ class HttpExecutor
         }
 
         $decoded = json_decode($text, true);
-        return $decoded === null && json_last_error() !== JSON_ERROR_NONE ? $text : $decoded;
+        if ($decoded === null && json_last_error() !== JSON_ERROR_NONE) {
+            if (!$allowText) {
+                throw new OpenWAException("OpenWA: non-JSON response for {$method} {$path}");
+            }
+            return $text;
+        }
+        return $decoded;
     }
 
     /**
@@ -225,6 +243,8 @@ class HttpExecutor
         $secrets = (self::$secrets ?? new \WeakMap())[$this] ?? ['apiKey' => '', 'headers' => []];
         $options = [
             'http_errors' => false,
+            // These APIs consume the whole body, so read failures must occur inside the transport catch.
+            'stream' => false,
             // Per-request options override injected Guzzle client defaults, so the SDK's configured
             // timeout is enforced consistently on both default and caller-supplied clients.
             'timeout' => $this->timeout,
@@ -258,7 +278,11 @@ class HttpExecutor
         $url = $this->baseUrl . $path;
         $query = array_filter($query, fn ($v) => $v !== null);
         if ($query !== []) {
-            $url .= (str_contains($path, '?') ? '&' : '?') . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+            $parts = explode('#', $url, 2);
+            $url = $parts[0] . (str_contains($parts[0], '?') ? '&' : '?') . http_build_query($query, '', '&', PHP_QUERY_RFC3986);
+            if (isset($parts[1])) {
+                $url .= '#' . $parts[1];
+            }
         }
         if ($body !== null) {
             $options['json'] = $body;
@@ -287,9 +311,21 @@ class HttpExecutor
         $status = $response->getStatusCode();
         // Treat any non-2xx as an error, including 3xx: redirects are deliberately not followed (so
         // the API key is never re-sent to the target), making an unfollowed 3xx unusable rather than
-        // a success. Matches the JS (`!res.ok`) and Python (`>= 300`) transports.
-        if ($status >= 300) {
+        // a success.
+        if ($status < 200 || $status >= 300) {
             throw $this->buildApiException($response, $method, $path);
+        }
+        // Guzzle 7's stream handler returns a body cut before its Content-Length as if it were whole, where cURL
+        // and Guzzle 8 raise a TransferException, so raise one too. A HEAD or 204 answer carries no body; every
+        // handler drops the Content-Length of a body it decoded (gzip), so that one is not compared either.
+        $declared = $response->getHeaderLine('Content-Length');
+        $size = $response->getBody()->getSize();
+        if ($method !== 'HEAD' && $status !== 204 && $size !== null && preg_match('/\A\d+\z/', $declared) === 1
+            && $size < (int) $declared) {
+            throw new RequestException(
+                sprintf('OpenWA: %s %s: the response ended after %d of %s bytes', $method, $path, $size, $declared),
+                new Request($method, $url)
+            );
         }
         return $response;
     }

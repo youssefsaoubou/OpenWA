@@ -41,8 +41,18 @@ export class ContactController {
       'timeout. Retry shortly.',
   })
   @ApiResponse({ status: 409, description: ENGINE_NOT_READY_409 })
-  @ApiQuery({ name: 'limit', required: false, description: 'Max contacts to return (1–1000, default 1000)' })
-  @ApiQuery({ name: 'offset', required: false, description: 'Number of contacts to skip (for paging)' })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    type: 'integer',
+    description: 'Max contacts to return (1-1000, default 1000)',
+  })
+  @ApiQuery({
+    name: 'offset',
+    required: false,
+    type: 'integer',
+    description: 'Number of contacts to skip (for paging)',
+  })
   async findAll(
     @Param('sessionId') sessionId: string,
     @Query('limit') limit?: string,
@@ -63,8 +73,9 @@ export class ContactController {
   @ApiOperation({
     summary: 'Batch-resolve profile picture URLs for up to 50 contacts',
     description:
-      'One request for a whole chat sidebar — avoids the burst of parallel single fetches that ' +
-      'would exhaust the per-IP throttle. Engine lookups run 5 at a time; per-id failures return null.',
+      'Resolve a chat sidebar in one request to avoid bursts of per-contact HTTP calls. ' +
+      'Engine lookups run 5 at a time; per-id failures return null. After a lookup times out, ' +
+      'later chunks are skipped and their ids are absent from the response.',
   })
   @ApiParam({ name: 'sessionId', description: 'Session ID' })
   @ApiQuery({ name: 'ids', required: true, description: 'Comma-separated contact ids (max 50 used)' })

@@ -316,6 +316,11 @@ export interface ChatMessage {
   status: 'pending' | 'sent' | 'delivered' | 'read' | 'failed';
   timestamp?: number;
   createdAt: string;
+  /**
+   * Storage key of the archived media copy. Null once retention deleted it, even where an older gateway left
+   * `metadata.media.archived` set. Absent on live socket payloads and engine history.
+   */
+  mediaPath?: string | null;
   metadata?: {
     poll?: { name: string; options: string[]; allowMultipleAnswers: boolean };
     media?: {
@@ -476,7 +481,10 @@ export interface Contact {
   id: string;
   name?: string;
   pushName?: string;
-  /** MSISDN digits without separators — always present in the response. */
+  /**
+   * MSISDN digits for a `<phone>@c.us` id. For an `<lid>@lid` id, the lid's digits on whatsapp-web.js, which are
+   * not a phone number, and on Baileys the phone's digits, or '' when the phone is unknown.
+   * Digits only, no separators — always present in the response. */
   number: string;
   isMyContact: boolean;
   isBlocked: boolean;
@@ -822,9 +830,13 @@ async function handleErrorResponse<T>(response: Response, sentKey: string | null
   const err = new Error(error.message || `HTTP ${response.status}`) as Error & {
     status?: number;
     code?: string;
+    retryAfterSeconds?: number;
   };
   err.status = response.status;
   if (typeof error.code === 'string') err.code = error.code;
+  // Retry-After in seconds (an HTTP date is ignored): the media loaders wait at least that long before retrying a 503.
+  const retryAfter = Number(response.headers.get('Retry-After') ?? Number.NaN);
+  if (retryAfter >= 0) err.retryAfterSeconds = retryAfter;
   throw err;
 }
 
@@ -1388,7 +1400,7 @@ export const infraApi = {
       method: 'PUT',
       body: JSON.stringify(config),
     }),
-  restart: (profiles?: string[], profilesToRemove?: string[]) =>
+  restart: (profiles?: string[], profilesToRemove?: string[], signal?: AbortSignal) =>
     request<{
       message: string;
       restarting: boolean;
@@ -1401,12 +1413,14 @@ export const infraApi = {
     }>('/infra/restart', {
       method: 'POST',
       body: JSON.stringify({ profiles: profiles || [], profilesToRemove: profilesToRemove || [] }),
+      signal,
     }),
   // Readiness, not the plain /infra/health ping. The restart poll must not be able to latch onto the
   // process it just asked to shut down: /infra/health answers 200 for the whole drain,
   // while /health/ready reports 503 as soon as draining starts and stays 503 until both databases
   // answer. Public (no API key), like /infra/health.
-  healthCheck: () => request<{ status: 'ok' | 'error'; details: Record<string, { status: string }> }>('/health/ready'),
+  healthCheck: (signal?: AbortSignal) =>
+    request<{ status: 'ok' | 'error'; details: Record<string, { status: string }> }>('/health/ready', { signal }),
   // Data migration: export all Data-DB tables (call while still on the OLD database, before switching),
   // then import after the switch + restart. Used by the DB-switch migration guard so data isn't lost.
   exportData: () =>

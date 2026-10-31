@@ -31,9 +31,20 @@ const emptyForm: TemplateForm = {
   footer: '',
 };
 
-function extractPlaceholders(template: TemplateForm | MessageTemplate) {
+// The gateway's renderer pattern (PLACEHOLDER_PATTERN in src/common/utils/template-render.ts), kept verbatim: a send
+// fills the legacy single-brace `{key}` form as well as `{{key}}`, so the list and the preview read both. Only the
+// double-brace form is advertised.
+export const PLACEHOLDER_PATTERN = /\{\{\s*([\w.-]+)\s*\}\}|\{(\w+)\}/g;
+
+/** The variables a send fills, each once, with the form it is written in: `{{key}}`, or `{key}` for the legacy form. */
+function extractPlaceholders(template: TemplateForm | MessageTemplate): Array<{ key: string; token: string }> {
   const source = [template.header, template.body, template.footer].filter(Boolean).join('\n');
-  return Array.from(new Set(Array.from(source.matchAll(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g), match => match[1]))).sort();
+  const tokens = new Map<string, string>();
+  for (const [, doubleKey, singleKey] of source.matchAll(PLACEHOLDER_PATTERN)) {
+    const key = doubleKey ?? singleKey;
+    if (!tokens.has(key)) tokens.set(key, doubleKey !== undefined ? `{{${key}}}` : `{${key}}`);
+  }
+  return [...tokens.keys()].sort().map(key => ({ key, token: tokens.get(key)! }));
 }
 
 function toPayload(form: TemplateForm): TemplatePayload {
@@ -46,10 +57,17 @@ function toPayload(form: TemplateForm): TemplatePayload {
 }
 
 function renderPreview(template: TemplateForm, values: Record<string, string>) {
-  return [template.header, template.body, template.footer]
-    .filter(Boolean)
-    .join('\n\n')
-    .replace(/\{\{\s*([a-zA-Z0-9_.-]+)\s*\}\}/g, (_match, key: string) => values[key] || `{{${key}}}`);
+  return (
+    [template.header, template.body, template.footer]
+      .filter(Boolean)
+      .join('\n\n')
+      // An unfilled placeholder stays as written, as the gateway leaves it.
+      .replace(
+        PLACEHOLDER_PATTERN,
+        (match, doubleKey: string | undefined, singleKey: string | undefined) =>
+          values[doubleKey ?? singleKey!] || match,
+      )
+  );
 }
 
 export function Templates() {
@@ -120,7 +138,7 @@ export function Templates() {
   useEffect(() => {
     setPreviewValues(current => {
       const next: Record<string, string> = {};
-      for (const key of placeholders) {
+      for (const { key } of placeholders) {
         next[key] = current[key] || '';
       }
       return next;
@@ -187,11 +205,12 @@ export function Templates() {
 
   const handleDelete = async () => {
     if (!selectedSessionId || !deleteTarget) return;
+    const draft = draftRef.current;
     try {
       await deleteMutation.mutateAsync({ sessionId: selectedSessionId, id: deleteTarget.id });
       toast.success(t('templates.toasts.deleted'));
-      if (editingTemplate?.id === deleteTarget.id) resetForm();
-      setDeleteTarget(null);
+      if (draftRef.current === draft && editingTemplate?.id === deleteTarget.id) resetForm();
+      setDeleteTarget(current => (current === deleteTarget ? null : current));
     } catch (err) {
       toast.error(
         t('templates.toasts.deleteFailed', {
@@ -332,7 +351,7 @@ export function Templates() {
                         <span className="template-list-body">{template.body}</span>
                         <span className="template-list-meta">
                           {templatePlaceholders.length > 0
-                            ? templatePlaceholders.map(key => `{{${key}}}`).join(' ')
+                            ? templatePlaceholders.map(({ token }) => token).join(' ')
                             : t('templates.noPlaceholders')}
                         </span>
                       </button>
@@ -341,7 +360,7 @@ export function Templates() {
                           className="icon-btn danger template-list-delete"
                           title={t('common.delete')}
                           aria-label={t('common.delete')}
-                          onClick={() => setDeleteTarget(template)}
+                          onClick={() => setDeleteTarget({ ...template })}
                           type="button"
                         >
                           <Trash2 size={14} />
@@ -375,7 +394,7 @@ export function Templates() {
                   <button
                     className="icon-btn danger"
                     title={t('common.delete')}
-                    onClick={() => setDeleteTarget(editingTemplate)}
+                    onClick={() => setDeleteTarget({ ...editingTemplate })}
                     type="button"
                   >
                     <Trash2 size={16} />
@@ -462,9 +481,9 @@ export function Templates() {
             <div className="template-variable-panel">
               {placeholders.length > 0 ? (
                 <div className="placeholder-list">
-                  {placeholders.map(key => (
+                  {placeholders.map(({ key, token }) => (
                     <label key={key}>
-                      <span>{`{{${key}}}`}</span>
+                      <span>{token}</span>
                       <input
                         value={previewValues[key] || ''}
                         onChange={event => setPreviewValues({ ...previewValues, [key]: event.target.value })}
