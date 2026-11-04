@@ -2,9 +2,9 @@ name: Sync Upstream
 
 # Keeps this fork in step with rmyndharis/OpenWA. The scheduled job compares the fork's main with
 # upstream main and, when upstream is ahead, merges it into a `sync/upstream` branch and opens (or
-# updates) a pull request. The branch lives in the fork, so the repository's own CI runs on the PR
-# exactly as it would for any other change — and unlike a cross-fork PR, it needs no maintainer
-# approval to run.
+# updates) a pull request. Scheduled runs request auto-merge, so main catches up after the repository's
+# required checks pass. The branch lives in the fork, so the repository's own CI runs on the PR exactly
+# as it would for any other change — and unlike a cross-fork PR, it needs no maintainer approval to run.
 #
 # The merge is always a real merge commit, never a squash or rebase: that keeps upstream's history
 # verbatim in the fork, which is what makes the next sync a plain fast-forward instead of a
@@ -23,10 +23,10 @@ on:
   workflow_dispatch:
     inputs:
       automerge:
-        description: Enable auto-merge on the sync PR (CI is not a required check in most forks)
+        description: Enable auto-merge on a manually triggered sync PR
         type: boolean
         required: false
-        default: false
+        default: true
 
 permissions:
   contents: read
@@ -200,7 +200,7 @@ jobs:
           )"
 
       - name: Auto-merge the sync pull request
-        if: inputs.automerge && steps.merge.outputs.synced == 'true'
+        if: (github.event_name == 'schedule' || inputs.automerge) && steps.merge.outputs.synced == 'true'
         env:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         run: gh pr merge "$SYNC_BRANCH" --repo "$GITHUB_REPOSITORY" --merge --auto --delete-branch
