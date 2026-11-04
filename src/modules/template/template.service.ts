@@ -101,12 +101,13 @@ export class TemplateService {
     if (dto.mediaUrl !== undefined) template.mediaUrl = dto.mediaUrl;
 
     try {
-      // No transaction of its own: on SQLite's single shared connection the rollback of the unique
-      // violation handled below would also discard what other callers wrote while it was open.
-      return await this.templateRepository.save(template, { transaction: false });
+      // Update only supplied fields, and never reinsert a concurrently deleted template.
+      const result = await this.templateRepository.update({ id, sessionId }, patch);
+      if (!result.affected) throw new NotFoundException(`Template with id '${id}' not found`);
+      return await this.findOne(sessionId, id);
     } catch (err) {
       if (isUniqueViolation(err)) {
-        throw new ConflictException(`A template named '${template.name}' already exists for this session`);
+        throw new ConflictException(`A template named '${dto.name ?? template.name}' already exists for this session`);
       }
       throw err;
     }

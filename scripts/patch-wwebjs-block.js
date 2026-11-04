@@ -46,6 +46,7 @@
 
 const fs = require('fs');
 const path = require('path');
+const { writeFileAtomic } = require('./atomic-write');
 
 const DEFAULT_WWJS = path.join(__dirname, '..', 'node_modules', 'whatsapp-web.js');
 const CONTACT_PATH = path.join('src', 'structures', 'Contact.js');
@@ -142,6 +143,10 @@ function normalizeLegacy(source) {
   return source.split(LEGACY_UNBLOCK_REPLACE).join(unblock.find);
 }
 
+function occurrences(source, needle) {
+  return source.split(needle).length - 1;
+}
+
 /**
  * Both groups' stand-down branch as one predicate, for the startup guard
  * (engine-patch-status.ts). A half-patched tree is a reachable, supported state here, and it reads
@@ -153,7 +158,7 @@ function normalizeLegacy(source) {
 function isApplied(wwjsDir = DEFAULT_WWJS) {
   try {
     const source = fs.readFileSync(path.join(wwjsDir, CONTACT_PATH), 'utf8');
-    return GROUPS.every((group) => source.includes(group.replace));
+    return GROUPS.every((group) => occurrences(source, group.replace) === 1 && occurrences(source, group.find) === 0);
   } catch {
     return true;
   }
@@ -169,11 +174,15 @@ function applyBlockPatches({ wwjsDir = DEFAULT_WWJS } = {}) {
   const skipped = [];
 
   for (const group of GROUPS) {
-    if (source.includes(group.replace)) {
+    const found = occurrences(source, group.find);
+    const patched = occurrences(source, group.replace);
+    if (found === 0 && patched === 1) {
       skipped.push(group.name);
       continue;
     }
-    if (!source.includes(group.find)) {
+    // Exactly one body to patch and none patched, as the sibling patchers demand: a second copy, or one beside
+    // its own replacement, would leave a body on the removed helper while every later run reads as patched.
+    if (found !== 1 || patched !== 0) {
       throw new Error(`unexpected ${group.name}() shape in ${CONTACT_PATH}: refusing to patch blind`);
     }
     source = source.replace(group.find, group.replace);
@@ -181,7 +190,7 @@ function applyBlockPatches({ wwjsDir = DEFAULT_WWJS } = {}) {
   }
 
   if (applied.length > 0) {
-    fs.writeFileSync(contactFile, source);
+    writeFileAtomic(contactFile, source);
   }
   return { applied, skipped };
 }

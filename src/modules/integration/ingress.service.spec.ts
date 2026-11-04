@@ -68,6 +68,49 @@ describe('redactSensitiveHeaders (persisted ingress payloads)', () => {
     expect(recorded.payload.headers['x-delivery']).toBe('d1');
   });
 
+  it('redacts a Standard Webhooks signature after authenticating, before persistence and the queue', async () => {
+    const key = Buffer.from('dummy-standard-webhooks-secret');
+    const signature = 'v1,' + createHmac('sha256', key).update('delivery.1000.{}').digest('base64');
+    const recordOrSkip = jest.fn().mockResolvedValue(true);
+    const enqueue = jest.fn().mockResolvedValue(undefined);
+    const d = deps({
+      now: () => 1_000_000,
+      events: { recordOrSkip },
+      enqueue,
+      instances: {
+        resolve: jest.fn().mockResolvedValue({
+          id: 'chatwoot:acct1',
+          pluginId: 'chatwoot',
+          instanceId: 'acct1',
+          secret: `whsec_${key.toString('base64')}`,
+          enabled: true,
+          sessionScope: 'sess-1',
+          verifyToken: null,
+        }),
+      },
+      manifestRoute: jest.fn().mockReturnValue({
+        route: 'chatwoot',
+        maxBodyBytes: 1024,
+        signature: { scheme: 'standard-webhooks' },
+      }),
+    });
+    const res = await new IngressService(d).handle({
+      pluginId: 'chatwoot',
+      instanceId: 'acct1',
+      route: 'chatwoot',
+      method: 'POST',
+      query: {},
+      rawBody: '{}',
+      headers: { 'webhook-id': 'delivery', 'webhook-timestamp': '1000', 'webhook-signature': signature },
+    });
+    expect(res.status).toBe(202);
+    const expected = { 'webhook-id': 'delivery', 'webhook-timestamp': '1000', 'webhook-signature': '[redacted]' };
+    const recorded = recordOrSkip.mock.calls as unknown as [[{ payload: { headers: unknown } }]];
+    const queued = enqueue.mock.calls as unknown as [[{ payload: { headers: unknown } }]];
+    expect(recorded[0][0].payload.headers).toEqual(expected);
+    expect(queued[0][0].payload.headers).toEqual(expected);
+  });
+
   it("redacts an hmac route's declared signature header in the persisted and enqueued payload", async () => {
     const d = deps({
       manifestRoute: jest.fn().mockReturnValue({
@@ -126,6 +169,158 @@ describe('redactSensitiveHeaders (persisted ingress payloads)', () => {
     expect(recorded.payload.headers['x-delivery']).toBe('d1');
     const job = (d.enqueue.mock.calls as unknown as [[{ payload: { headers: Record<string, string> } }]])[0][0];
     expect(job.payload.headers['x-provider-token']).toBe('[redacted]');
+  });
+});
+
+describe('IngressService admission verdict', () => {
+  it.each([
+    {
+      label: 'an unauthenticated route',
+      signature: { scheme: 'none' },
+      headers: {} as Record<string, string>,
+      verified: false,
+    },
+    {
+      label: 'a shared-secret route',
+      signature: { scheme: 'shared-secret', header: 'X-Provider-Token' },
+      headers: { 'x-provider-token': 's' },
+      verified: true,
+    },
+  ])(
+    'records $label as verified: $verified in the stored and queued payload',
+    async ({ signature, headers, verified }) => {
+      const d = deps({
+        manifestRoute: jest.fn().mockReturnValue({
+          route: 'chatwoot',
+          mode: 'async',
+          verify: 'core',
+          maxBodyBytes: 1024,
+          signature,
+          dedupHeader: 'x-delivery',
+        }),
+      });
+      const res = await new IngressService(d).handle({
+        pluginId: 'chatwoot',
+        instanceId: 'acct1',
+        route: 'chatwoot',
+        method: 'POST',
+        headers: { 'x-delivery': 'd1', ...headers },
+        query: {},
+        rawBody: '{}',
+      });
+      expect(res.status).toBe(202);
+      const stored = (d.events.recordOrSkip.mock.calls as unknown as [[{ payload: { admission?: unknown } }]])[0][0];
+      const queued = (d.enqueue.mock.calls as unknown as [[{ payload: { admission?: unknown } }]])[0][0];
+      expect(stored.payload.admission).toEqual({ verified });
+      expect(queued.payload.admission).toEqual({ verified });
+    },
+  );
+
+  // No scheme signs the query string, so the signature of an empty body vouches for any query sent with it.
+  const swKey = Buffer.from('dummy-standard-webhooks-secret');
+  const hmacOf = (body: string) => createHmac('sha256', 's').update(body).digest('hex');
+  const swHeaders = (body: string) => ({
+    'webhook-id': 'delivery',
+    'webhook-timestamp': '1000',
+    'webhook-signature': 'v1,' + createHmac('sha256', swKey).update(`delivery.1000.${body}`).digest('base64'),
+  });
+  const hmacRoute = { scheme: 'hmac-sha256', header: 'x-signature' };
+  it.each<{
+    label: string;
+    signature: { scheme: string; header?: string };
+    dedupOn: string | undefined;
+    rawBody: string;
+    query: Record<string, string>;
+    headers: Record<string, string>;
+    verified: boolean;
+  }>([
+    {
+      label: 'a bodiless hmac delivery that carries a query',
+      signature: hmacRoute,
+      dedupOn: undefined,
+      rawBody: '',
+      query: { text: 'forged order' },
+      headers: { 'x-signature': hmacOf('') },
+      verified: false,
+    },
+    {
+      label: 'the same delivery on a route that dedups on the body',
+      signature: hmacRoute,
+      dedupOn: 'body',
+      rawBody: '',
+      query: { text: 'forged order' },
+      headers: { 'x-signature': hmacOf('') },
+      verified: false,
+    },
+    {
+      label: 'a bodiless standard-webhooks delivery that carries a query',
+      signature: { scheme: 'standard-webhooks' },
+      dedupOn: 'body',
+      rawBody: '',
+      query: { text: 'forged order' },
+      headers: swHeaders(''),
+      verified: false,
+    },
+    {
+      label: 'a signed body that arrives with a query',
+      signature: hmacRoute,
+      dedupOn: undefined,
+      rawBody: '{}',
+      query: { ref: 'a' },
+      headers: { 'x-signature': hmacOf('{}') },
+      verified: true,
+    },
+    {
+      label: 'a bodiless hmac delivery without a query',
+      signature: hmacRoute,
+      dedupOn: undefined,
+      rawBody: '',
+      query: {},
+      headers: { 'x-signature': hmacOf('') },
+      verified: true,
+    },
+    {
+      label: 'a bodiless shared-secret delivery that carries a query',
+      signature: { scheme: 'shared-secret', header: 'x-provider-token' },
+      dedupOn: undefined,
+      rawBody: '',
+      query: { text: 'hello' },
+      headers: { 'x-provider-token': 's' },
+      verified: true,
+    },
+  ])('records $label as verified: $verified', async ({ signature, dedupOn, rawBody, query, headers, verified }) => {
+    const secret = signature.scheme === 'standard-webhooks' ? `whsec_${swKey.toString('base64')}` : 's';
+    const d = deps({
+      now: () => 1_000_000,
+      instances: {
+        resolve: jest.fn().mockResolvedValue({
+          id: 'sms:acct1',
+          pluginId: 'sms',
+          instanceId: 'acct1',
+          secret,
+          enabled: true,
+          sessionScope: 'sess-1',
+          verifyToken: null,
+        }),
+      },
+      manifestRoute: jest
+        .fn()
+        .mockReturnValue({ route: 'inbound', mode: 'async', verify: 'core', maxBodyBytes: 1024, signature, dedupOn }),
+    });
+    const res = await new IngressService(d).handle({
+      pluginId: 'sms',
+      instanceId: 'acct1',
+      route: 'inbound',
+      method: 'GET',
+      headers,
+      query,
+      rawBody,
+    });
+    expect(res.status).toBe(202);
+    const stored = (d.events.recordOrSkip.mock.calls as unknown as [[{ payload: { admission?: unknown } }]])[0][0];
+    const queued = (d.enqueue.mock.calls as unknown as [[{ payload: { admission?: unknown } }]])[0][0];
+    expect(stored.payload.admission).toEqual({ verified });
+    expect(queued.payload.admission).toEqual({ verified });
   });
 });
 
@@ -642,6 +837,32 @@ describe('extractConversationId', () => {
 
   it('returns undefined on a malformed body without throwing', () => {
     expect(extractConversationId({ jsonPointer: '/a/b' }, {}, 'not json')).toBeUndefined();
+  });
+
+  it.each([
+    ['/a~1b/id', { 'a/b': { id: 'slash' } }, 'slash'],
+    ['/a~0b/id', { 'a~b': { id: 'tilde' } }, 'tilde'],
+    ['/a~01b/id', { 'a~1b': { id: 'once' } }, 'once'],
+    ['/box//id', { box: { '': { id: 'empty' }, id: 'wrong' } }, 'empty'],
+    ['/', { '': 'empty-root-key' }, 'empty-root-key'],
+    ['/items/0/id', { items: [{ id: 42 }] }, '42'],
+    ['conversation/id', { conversation: { id: 'no-leading-slash' } }, 'no-leading-slash'],
+  ])('resolves the pointer %s by its RFC 6901 tokens', (jsonPointer, body, expected) => {
+    expect(extractConversationId({ jsonPointer }, {}, JSON.stringify(body))).toBe(expected);
+  });
+
+  it.each(['/a~2b', '/a~', '/items/01/id', '/items/length', '/toString', '/name/length'])(
+    'finds nothing for the pointer %s',
+    jsonPointer => {
+      const body = { 'a~2b': 'wrong', 'a~': 'wrong', items: [{ id: 1 }], name: 'abc' };
+      expect(extractConversationId({ jsonPointer }, {}, JSON.stringify(body))).toBeUndefined();
+    },
+  );
+
+  it('keeps the declared header ahead of a body pointer', () => {
+    expect(extractConversationId({ header: 'X-Conv', jsonPointer: '/' }, { 'x-conv': 'header' }, '{"":"body"}')).toBe(
+      'header',
+    );
   });
 });
 

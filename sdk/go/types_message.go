@@ -23,8 +23,8 @@ type SendTextRequest struct {
 	// engines differ: whatsapp-web.js builds one in-page by default, while on Baileys a preview is
 	// OPT-IN — it needs true, because generating one is a blocking outbound fetch per URL.
 	LinkPreview *bool `json:"linkPreview,omitempty"`
-	// CustomLinkPreview attaches a preview you supply instead of one fetched from the URL. Nothing is
-	// fetched, so it works even for a URL the gateway cannot reach. Baileys only — whatsapp-web.js
+	// CustomLinkPreview attaches a preview you supply instead of one fetched from the URL. The page is
+	// not fetched, so it works even for a URL the gateway cannot reach. Baileys only — whatsapp-web.js
 	// takes a boolean and answers 501. Cannot be combined with LinkPreview=false.
 	CustomLinkPreview *CustomLinkPreview `json:"customLinkPreview,omitempty"`
 	// QuotedMessageID quotes an earlier message, turning this send into a reply. Engine-specific:
@@ -69,7 +69,8 @@ type SendAudioRequest struct {
 	Mentions []string `json:"mentions,omitempty"`
 }
 
-// SendLocationRequest sends a location pin. ChatID/Latitude/Longitude required.
+// SendLocationRequest sends a location pin. ChatID/Latitude/Longitude required. A coordinate left
+// unset is sent as 0, a real place, and the gateway sends a pin there, so always set both.
 type SendLocationRequest struct {
 	ChatID      string  `json:"chatId"`
 	Latitude    float64 `json:"latitude"`

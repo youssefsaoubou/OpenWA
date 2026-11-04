@@ -19,6 +19,7 @@ import {
   comparePair,
   exposedSchemas,
   handToken,
+  inlineBodies,
   parseGoTypes,
   parseHandTypes,
   parseJavaTypes,
@@ -112,7 +113,7 @@ test('comparePair flags a widened union and an enum mismatch at token level', ()
     count: { optional: false, token: 'number | null' },
   };
   const diffs = comparePair('Sample', hand, 'SampleDto', schemas.SampleDto, schemas);
-  assert.ok(diffs.some(d => d.includes('"direction": hand string, contract enum(incoming,outgoing)')));
+  assert.ok(diffs.some(d => d.includes('"direction": hand string, contract enum(["incoming","outgoing"])')));
   assert.ok(diffs.some(d => d.includes('"count": hand number|null, contract number')));
 });
 
@@ -127,6 +128,32 @@ test('comparePair flags a primitive widened to a union of primitives', () => {
   const diffs = comparePair('Sample', hand, 'SampleDto', schemas.SampleDto, schemas);
   assert.ok(diffs.some(d => d.includes('"id": hand union(number,string), contract string')));
   assert.ok(diffs.some(d => d.includes('"count": hand union(int,str), contract number')));
+});
+
+test('comparePair fails a field whose hand type it cannot read instead of skipping it', () => {
+  const schema = {
+    type: 'object',
+    required: ['status'],
+    properties: { status: { type: 'string', enum: ['ready', 'failed'] } },
+  };
+  const compare = types => comparePair('Sample', types.Sample, 'SampleDto', schema, {});
+  // A union too long for one line, as prettier wraps it, with 'failed' replaced.
+  const wrapped = parseHandTypes("export interface Sample {\n  status:\n    | 'ready'\n    | 'gone';\n}\n");
+  assert.deepEqual(compare(wrapped), ['"status": hand enum(["gone","ready"]), contract enum(["failed","ready"])']);
+  // Forms no parser reduces: an alias that is not exported, a TypeScript enum, a Go type outside the known kinds.
+  for (const types of [
+    parseHandTypes("type Status = 'ready' | 'gone';\nexport interface Sample {\n  status: Status;\n}\n"),
+    parseHandTypes("export enum Status {\n  Ready = 'ready',\n}\nexport interface Sample {\n  status: Status;\n}\n"),
+  ]) {
+    assert.deepEqual(compare(types), [
+      '"status": hand type could not be read (Status), contract enum(["failed","ready"])',
+    ]);
+  }
+  assert.deepEqual(compare(parseGoTypes(['type Sample struct {\n\tStatus pb.Status `json:"status"`\n}'])), [
+    '"status": hand type could not be read (pb.Status), contract enum(["failed","ready"])',
+  ]);
+  // Go writes a time.Time as an RFC 3339 string.
+  assert.equal(parseGoTypes(['type Sample struct {\n\tAt time.Time `json:"at"`\n}']).Sample.at.token, 'string');
 });
 
 test('comparePair with namesOnly keeps the field names and drops optionality and token', () => {
@@ -154,7 +181,7 @@ test('parseObjectToken splits nested object tokens without losing members', () =
 
 test('handToken reduces enums, null unions and arrays deterministically', () => {
   const types = {};
-  assert.equal(handToken("'b' | 'a'", types), 'enum(a,b)'.replace(',', ','));
+  assert.equal(handToken("'b' | 'a'", types), 'enum(["a","b"])'.replace(',', ','));
   assert.equal(handToken('number | null', types), 'number|null');
   assert.equal(handToken('string[]', types), 'array<string>');
 });
@@ -200,7 +227,7 @@ test('parsePythonTypes: TypedDict totals, NotRequired, aliased Literal enums, in
   const types = parsePythonTypes(src);
   assert.equal(types.Session.id.optional, true, 'inherited total=False member stays optional');
   assert.equal(types.Session.name.optional, false);
-  assert.equal(types.Session.status.token, 'enum(created,ready)');
+  assert.equal(types.Session.status.token, 'enum(["created","ready"])');
   assert.equal(types.Session.lastError.optional, true);
   assert.equal(types.Session.lastError.token, 'string|null');
 });
@@ -237,7 +264,7 @@ test('parseGoTypes: omitempty optionality, pointer nullability, const-block enum
   // Member maps key by JSON tag (the wire name), not the Go identifier.
   const s = parseGoTypes([src]).Sample;
   assert.equal(s.name.optional, true);
-  assert.equal(s.kind.token, 'enum(one,two)');
+  assert.equal(s.kind.token, 'enum(["one","two"])');
   assert.equal(s.kind.optional, false);
   assert.equal(s.items.token, 'array<string>');
   assert.equal(s.items.optional, false, 'bare slice is a REQUIRED array');
@@ -261,7 +288,7 @@ test('parsePythonTypes: a Literal of bare numbers is an enum, not an unreadable 
   ].join('\n');
   // Members went unread before, so the field fell through to a non-simple token and comparePair
   // skipped it: the enum silently stopped being gated while the run stayed green.
-  assert.equal(parsePythonTypes(src).Post.font.token, 'enum(0,1,2,6,10)', 'sorted numerically, not 0,1,10,2,6');
+  assert.equal(parsePythonTypes(src).Post.font.token, 'enum([0,1,2,6,10])', 'sorted numerically, not 0,1,10,2,6');
 });
 
 test('parseGoTypes: a const block of bare numbers is an enum', () => {
@@ -278,7 +305,7 @@ test('parseGoTypes: a const block of bare numbers is an enum', () => {
     '\tWindow Window `json:"window"`',
     '}',
   ].join('\n');
-  assert.equal(parseGoTypes([src]).Sample.window.token, 'enum(86400,604800,2592000)');
+  assert.equal(parseGoTypes([src]).Sample.window.token, 'enum([86400,604800,2592000])');
 });
 
 test('parseJavaTypes: enum constants resolve to their wire values, annotated or bare', () => {
@@ -298,8 +325,8 @@ test('parseJavaTypes: enum constants resolve to their wire values, annotated or 
   const s = parseJavaTypes([src]).Sample;
   // Gson emits @SerializedName when present and the constant name otherwise; without this the
   // component resolved to the Java type name, which comparePair skips as non-simple.
-  assert.equal(s.scheme.token, 'enum(http,socks5)');
-  assert.equal(s.shades.token, 'array<enum(BLUE,RED)>');
+  assert.equal(s.scheme.token, 'enum(["http","socks5"])');
+  assert.equal(s.shades.token, 'array<enum(["BLUE","RED"])>');
 });
 
 test('parseJavaTypes: a bare UNKNOWN sentinel is not a wire member, an annotated "unknown" is', () => {
@@ -316,12 +343,12 @@ test('parseJavaTypes: a bare UNKNOWN sentinel is not a wire member, an annotated
     'public record Sample(Status status, Kind kind) {}',
   ].join('\n');
   const s = parseJavaTypes([src]).Sample;
-  assert.equal(s.status.token, 'enum(ready)');
-  assert.equal(s.kind.token, 'enum(chat,unknown)');
+  assert.equal(s.status.token, 'enum(["ready"])');
+  assert.equal(s.kind.token, 'enum(["chat","unknown"])');
 });
 
 test('isSimpleToken-gated diffing reaches inside an array of enum members', () => {
-  const hand = { events: { optional: false, token: 'array<enum(a,b)>' } };
+  const hand = { events: { optional: false, token: 'array<enum(["a","b"])>' } };
   const schema = {
     type: 'object',
     required: ['events'],
@@ -337,19 +364,19 @@ test('a nullable enum is compared on both sides, the null member of the contract
   // The token used to end in `|null`, which no comparison accepted, so such a field was never compared.
   const kind = { type: 'string', nullable: true, enum: ['a', 'b', null] };
   const schema = { type: 'object', required: ['kind'], properties: { kind } };
-  assert.equal(schemaToken(kind, {}), 'enum(a,b)|null');
-  assert.equal(handToken("'b' | 'a' | null", {}), 'enum(a,b)|null');
+  assert.equal(schemaToken(kind, {}), 'enum(["a","b"])|null');
+  assert.equal(handToken("'b' | 'a' | null", {}), 'enum(["a","b"])|null');
 
   const hand = { kind: { optional: false, token: "'a' | 'b' | null" } };
   assert.deepEqual(comparePair('Hand', hand, 'Dto', schema, {}), []);
   // A member the contract gained, and a null arm the hand lacks, are drift.
   const gained = { ...schema, properties: { kind: { ...kind, enum: ['a', 'b', 'c', null] } } };
   assert.deepEqual(comparePair('Hand', hand, 'Dto', gained, {}), [
-    '"kind": hand enum(a,b)|null, contract enum(a,b,c)|null',
+    '"kind": hand enum(["a","b"])|null, contract enum(["a","b","c"])|null',
   ]);
   const notNull = { kind: { optional: false, token: "'a' | 'b'" } };
   assert.deepEqual(comparePair('Hand', notNull, 'Dto', schema, {}), [
-    '"kind": hand enum(a,b), contract enum(a,b)|null',
+    '"kind": hand enum(["a","b"]), contract enum(["a","b"])|null',
   ]);
 });
 
@@ -375,8 +402,8 @@ test('parsePythonTypes: a nullable Literal or list keeps its closing bracket and
   // read as the unparseable `Literal["x", "y"` and the field was never compared.
   const tokens = Object.values(parsePythonTypes(src).Sample).map(v => v.token);
   assert.deepEqual(tokens, [
-    'enum(x,y)|null',
-    'enum(x,y)|null',
+    'enum(["x","y"])|null',
+    'enum(["x","y"])|null',
     'array<string>|null',
     'array<string>|null',
     'string|null',
@@ -615,6 +642,18 @@ function withBrandNewPayload(contract) {
   return contract;
 }
 
+/** The gate source with BrandNew mapped for the dashboard, and the dashboard floor raised to match. */
+function mapBrandNewForDashboard(source) {
+  const mapped = editSource(
+    source,
+    "  'dashboard/src/services/api.ts': {\n    AccountRestriction: 'AccountRestrictionDto',",
+    "  'dashboard/src/services/api.ts': {\n    BrandNew: 'BrandNewDto',\n    AccountRestriction: 'AccountRestrictionDto',",
+  );
+  const floor = /^ {2}'dashboard\/src\/services\/api\.ts': (\d+),$/m.exec(mapped);
+  assert.ok(floor, 'the dashboard floor in MINIMUM_MAPPED has moved: move this anchor');
+  return mapped.replace(floor[0], `  'dashboard/src/services/api.ts': ${Number(floor[1]) + 1},`);
+}
+
 test('the gate exits 0 on the repository and finds every exposed schema covered', () => {
   // Also pins the harness below: a copy that cannot run would fail the other cases for the wrong reason.
   // A pair whose target is a list (a body type that is also its response) has to reach the comparison and
@@ -625,6 +664,47 @@ test('the gate exits 0 on the repository and finds every exposed schema covered'
     run.output,
     /schema coverage: \d+ schemas sent or returned, \d+ recorded unmapped in UNMAPPED_SCHEMAS, all covered/,
   );
+});
+
+test('inlineBodies names the exposed operations that send or return an object no schema name stands for', () => {
+  const object = { type: 'object', properties: { labelId: { type: 'string' } } };
+  const openapi = {
+    paths: {
+      '/api/sessions/{sessionId}/inline': { post: { requestBody: json(object), responses: { 201: json(ref('A')) } } },
+      '/api/sessions/{sessionId}/named': { post: { requestBody: json(ref('A')), responses: { 200: json(ref('A')) } } },
+      '/api/sessions/{sessionId}/listed': { get: { responses: { 200: json({ type: 'array', items: object }) } } },
+      '/api/sessions/{sessionId}/wrapped': { get: { responses: { 200: json({ nullable: true, allOf: [ref('A')] }) } } },
+      '/api/sessions/{sessionId}/failing': { get: { responses: { 400: json(object) } } },
+      '/api/audit/inline': { post: { requestBody: json(object) } },
+    },
+  };
+  assert.deepEqual(inlineBodies(openapi, new Set(['audit'])), [
+    'POST /api/sessions/{sessionId}/inline',
+    'GET /api/sessions/{sessionId}/listed',
+  ]);
+});
+
+test('the gate exits 1 on a new inline body and on a recorded one that is gone', () => {
+  // Renaming a field of an inline body changes the contract with no hand type to compare it against.
+  const added = runGateOnCopy({
+    contract: contract => {
+      contract.paths['/api/sessions/{sessionId}/brand-new'] = {
+        post: { requestBody: json({ type: 'object', properties: { id: { type: 'string' } } }), responses: {} },
+      };
+      return contract;
+    },
+  });
+  assert.equal(added.status, 1, added.output);
+  assert.match(added.output, /POST \/api\/sessions\/\{sessionId\}\/brand-new declares an inline object/);
+
+  const named = runGateOnCopy({
+    contract: contract => {
+      contract.paths['/api/sessions/{sessionId}/channels/subscribe'].post.requestBody = json(ref('UpsertLabelDto'));
+      return contract;
+    },
+  });
+  assert.equal(named.status, 1, named.output);
+  assert.match(named.output, /INLINE_BODIES lists POST \/api\/sessions\/\{sessionId\}\/channels\/subscribe.*remove it/);
 });
 
 test('the gate exits 1 and names an exposed payload that no client maps', () => {
@@ -639,12 +719,7 @@ test('a schema that only the dashboard compares, or only an excluded pair holds,
   const dashboardOnly = runGateOnCopy({
     contract: withBrandNewPayload,
     dashboardTypes: api => `${api}\nexport interface BrandNew {\n  id: string;\n}\n`,
-    script: source =>
-      editSource(
-        source,
-        "  'dashboard/src/services/api.ts': {\n    AccountRestriction: 'AccountRestrictionDto',",
-        "  'dashboard/src/services/api.ts': {\n    BrandNew: 'BrandNewDto',\n    AccountRestriction: 'AccountRestrictionDto',",
-      ),
+    script: mapBrandNewForDashboard,
   });
   assert.match(dashboardOnly.output, /dashboard\/src\/services\/api\.ts: \d+ pairs compared, all conform/);
   assert.equal(dashboardOnly.status, 1, dashboardOnly.output);
@@ -733,6 +808,35 @@ test('an excluded pair with a looser field type is still compared by field name'
   }
 });
 
+test('the gate refuses a mapping whose size differs from its floor', () => {
+  // The floor is what makes a rewrite that drops pairs fail. Left one below its mapping, it let one Java pair go
+  // with nothing failing: AccountRestriction stays compared by the other clients, so coverage stays green too.
+  const dropped = runGateOnCopy({
+    script: source =>
+      editSource(
+        source,
+        "const JAVA_MAPPING = {\n  AccountRestriction: 'AccountRestrictionDto',\n",
+        'const JAVA_MAPPING = {\n',
+      ),
+  });
+  assert.equal(dropped.status, 1, dropped.output);
+  assert.match(dropped.output, /only \d+ mapped pairs for sdk\/java \(model\/\*\.java\) \(floor \d+\)/);
+
+  // A floor left below a grown mapping is the same hole, opened by a pair added without raising it.
+  const stale = runGateOnCopy({
+    script: source => {
+      const floor = /^ {2}'sdk\/java': (\d+),$/m.exec(source);
+      assert.ok(floor, 'the Java floor in MINIMUM_MAPPED has moved: move this anchor');
+      return source.replace(floor[0], `  'sdk/java': ${Number(floor[1]) - 1},`);
+    },
+  });
+  assert.equal(stale.status, 1, stale.output);
+  assert.match(
+    stale.output,
+    /\d+ mapped pairs for sdk\/java \(model\/\*\.java\), above its floor of \d+: raise the floor/,
+  );
+});
+
 test('the gate refuses a NAMES_ONLY entry whose pair is not excluded', () => {
   // An entry left behind after a pair is retyped and un-excluded would keep the weaker name-only comparison.
   const run = runGateOnCopy({
@@ -754,13 +858,262 @@ test('the gate and its CLI cases give the same verdicts on a CRLF checkout', () 
     lineEnding: '\r\n',
     contract: withBrandNewPayload,
     dashboardTypes: api => `${api}\nexport interface BrandNew {\n  id: string;\n}\n`,
-    script: source =>
-      editSource(
-        source,
-        "  'dashboard/src/services/api.ts': {\n    AccountRestriction: 'AccountRestrictionDto',",
-        "  'dashboard/src/services/api.ts': {\n    BrandNew: 'BrandNewDto',\n    AccountRestriction: 'AccountRestrictionDto',",
-      ),
+    script: mapBrandNewForDashboard,
   });
   assert.equal(dashboardOnly.status, 1, dashboardOnly.output);
   assert.match(dashboardOnly.output, /BrandNewDto is sent or returned by the SDKs but no client compares it/);
+});
+
+test('enum comparison preserves number, string and boolean wire kinds in every client parser', () => {
+  const sample = {
+    typescript: (a, b) => parseHandTypes(`export interface Sample {\n  value: '${a}' | '${b}';\n}\n`).Sample,
+    python: (a, b) => parsePythonTypes(`class Sample(TypedDict):\n    value: Literal["${a}", "${b}"]\n`).Sample,
+    go: (a, b) =>
+      parseGoTypes([
+        `type Kind string\nconst (\n One Kind = "${a}"\n Two Kind = "${b}"\n)\ntype Sample struct {\n Value Kind \x60json:"value"\x60\n}\n`,
+      ]).Sample,
+    java: (a, b) =>
+      parseJavaTypes([
+        `public enum Kind {\n @SerializedName("${a}") ONE,\n @SerializedName("${b}") TWO\n}\npublic record Sample(Kind value) {}\n`,
+      ]).Sample,
+  };
+  for (const [language, parse] of Object.entries(sample)) {
+    for (const values of [
+      [0, 1],
+      [false, true],
+    ]) {
+      const hand = parse(...values.map(String));
+      const dto = members => ({
+        type: 'object',
+        required: ['value'],
+        properties: { value: { type: typeof members[0], enum: members } },
+      });
+      assert.deepEqual(comparePair('Sample', hand, 'Dto', dto(values.map(String)), {}, language !== 'java'), []);
+      assert.ok(comparePair('Sample', hand, 'Dto', dto(values), {}, language !== 'java').length > 0, language);
+      const arrayHand = {
+        value: {
+          ...hand.value,
+          token: `array<${language === 'typescript' ? handToken(hand.value.token, {}) : hand.value.token}>`,
+        },
+      };
+      const arrayDto = {
+        type: 'object',
+        required: ['value'],
+        properties: { value: { type: 'array', items: { type: typeof values[0], enum: values } } },
+      };
+      assert.ok(
+        comparePair('Sample', arrayHand, 'Dto', arrayDto, {}, language !== 'java').length > 0,
+        `${language} array`,
+      );
+    }
+  }
+});
+
+test('nullable enum comparisons retain kind and Java numeric loosening accepts only numeric members', () => {
+  const dto = value => ({ type: 'object', required: ['value'], properties: { value } });
+  const numeric = dto({ type: 'number', enum: [0, 1, null], nullable: true });
+  const strings = dto({ type: 'string', enum: ['0', '1', null], nullable: true });
+  const hand = { value: { optional: false, token: "'0' | '1' | null" } };
+  assert.deepEqual(comparePair('Sample', hand, 'Dto', strings, {}), []);
+  assert.ok(comparePair('Sample', hand, 'Dto', numeric, {}).length > 0);
+  const java = parseJavaTypes(['public record Sample(Integer value) {}']).Sample;
+  assert.deepEqual(comparePair('Sample', java, 'Dto', numeric, {}, false), []);
+  assert.ok(comparePair('Sample', java, 'Dto', strings, {}, false).length > 0);
+});
+
+test('TypeScript double-quoted numeric strings remain strings and JSON enum punctuation preserves later fields', () => {
+  const numeric = { type: 'object', required: ['value'], properties: { value: { type: 'number', enum: [0, 1] } } };
+  const hand = parseHandTypes('export interface Sample {\n  value: "0" | "1";\n}\n').Sample;
+  assert.ok(comparePair('Sample', hand, 'Dto', numeric, {}).length > 0);
+  const value = 'a),<"b';
+  const schema = {
+    type: 'object',
+    required: ['value', 'tail'],
+    properties: { value: { type: 'string', enum: [value] }, tail: { type: 'boolean' } },
+  };
+  const fields = parseObjectToken(schemaToken(schema, {}));
+  assert.deepEqual(Object.keys(fields), ['tail', 'value']);
+  assert.equal(fields.tail.token, 'boolean');
+});
+
+test('the CLI refuses numeric status fonts declared as strings in every typed SDK', () => {
+  const edit = (s, a, b) => {
+    assert.ok(s.includes(a));
+    return s.replace(a, b);
+  };
+  const cases = [
+    [
+      'sdk/javascript/src/types.ts',
+      s => edit(s, 'font?: 0 | 1 | 2 | 6 | 7 | 8 | 9 | 10;', "font?: '0' | '1' | '2' | '6' | '7' | '8' | '9' | '10';"),
+    ],
+    [
+      'sdk/python/openwa/types.py',
+      s =>
+        edit(
+          s,
+          'StatusFont = Literal[0, 1, 2, 6, 7, 8, 9, 10]',
+          'StatusFont = Literal["0", "1", "2", "6", "7", "8", "9", "10"]',
+        ),
+    ],
+    [
+      'sdk/go/types_status.go',
+      s =>
+        edit(s, 'type StatusFont int', 'type StatusFont string').replace(
+          /(StatusFont\s*=\s*)(\d+)(\s*(?:\/\/[^\n]*)?\n)/g,
+          '$1"$2"$3',
+        ),
+    ],
+    [
+      `${javaModel}/SendTextStatusRequest.java`,
+      () => `package com.rmyndharis.openwa.model;
+import java.util.List;
+import com.google.gson.annotations.SerializedName;
+public record SendTextStatusRequest(String text, List<String> recipients, String backgroundColor, FixtureFont font) {
+  public enum FixtureFont {
+    @SerializedName("0") F0, @SerializedName("1") F1, @SerializedName("2") F2,
+    @SerializedName("6") F6, @SerializedName("7") F7, @SerializedName("8") F8,
+    @SerializedName("9") F9, @SerializedName("10") F10
+  }
+}
+`,
+    ],
+  ];
+  for (const [path, mutate] of cases) {
+    const result = runGateOnCopy({ sdk: { [path]: mutate } });
+    assert.equal(result.status, 1, `${path}: ${result.output}`);
+    assert.match(result.output, /SendTextStatusRequest/);
+    assert.match(result.output, /font/);
+  }
+});
+
+for (const [name, value] of [
+  ['empty', { type: 'number', enum: [] }],
+  ['null-only', { type: 'number', enum: [null], nullable: true }],
+]) {
+  test(`Java numeric relaxation refuses a ${name} enum`, () => {
+    const java = parseJavaTypes(['public record Sample(Integer value) {}']).Sample;
+    const schema = { type: 'object', required: ['value'], properties: { value } };
+    assert.ok(comparePair('Sample', java, 'Dto', schema, {}, false).length > 0);
+    const numeric = { ...schema, properties: { value: { type: 'number', enum: [0, 1] } } };
+    assert.deepEqual(comparePair('Sample', java, 'Dto', numeric, {}, false), []);
+  });
+}
+
+test('resolves TypeScript export type aliases and typeof-const unions in handToken and comparePair', () => {
+  const jsSrc = readFileSync(join(gateRoot, 'sdk/javascript/src/types.ts'), 'utf8');
+  const jsTypes = parseHandTypes(jsSrc);
+  assert.equal(handToken(jsTypes.GroupInfo.owner.token, jsTypes), 'string');
+  const fakeDriftedWebhook = {
+    url: { optional: false, token: jsTypes.CreateWebhookRequest.url.token },
+    events: { optional: true, token: 'WebhookEvent[];' },
+  };
+  const fakeSchema = {
+    type: 'object',
+    required: ['url'],
+    properties: {
+      url: { type: 'string' },
+      events: { type: 'array', items: { type: 'string', enum: ['only.one.event'] } },
+    },
+  };
+  const diffs = comparePair('CreateWebhookRequest', fakeDriftedWebhook, 'CreateWebhookDto', fakeSchema, {
+    CreateWebhookDto: fakeSchema,
+  });
+  assert.ok(
+    diffs.length > 0,
+    'comparePair should gate TypeScript fields typed via export type aliases (WebhookEvent[])',
+  );
+
+  const constTupleTypes = parseHandTypes(
+    "export const KINDS = ['a', 'b'] as const;\nexport type Kind = (typeof KINDS)[number];\nexport interface Item {\n  kind: Kind;\n}\n",
+  );
+  assert.deepEqual(
+    comparePair(
+      'Item',
+      constTupleTypes.Item,
+      'ItemDto',
+      { type: 'object', required: ['kind'], properties: { kind: { type: 'string', enum: ['a', 'b'] } } },
+      {},
+    ),
+    [],
+  );
+});
+
+test('parsePythonTypes parses functional TypedDicts with comment lines, comma-bearing Literal types, and functional base classes', () => {
+  const pySrc = readFileSync(join(gateRoot, 'sdk/python/openwa/types.py'), 'utf8');
+  const pyTypes = parsePythonTypes(pySrc);
+  assert.ok(pyTypes.ListMessagesQuery, 'ListMessagesQuery should be parsed by parsePythonTypes');
+  assert.equal(pyTypes.ListMessagesQuery.direction.token, 'enum(["incoming","outgoing"])');
+  assert.equal(pyTypes.ListMessagesQuery.orderBy.token, 'enum(["createdAt","timestamp"])');
+  assert.ok(
+    pyTypes.SearchQueryParams?.match,
+    'SearchQueryParams.match (Literal["word", "contains"]) should not be dropped by parsePythonTypes',
+  );
+  assert.equal(pyTypes.SearchQueryParams.match.token, 'enum(["contains","word"])');
+  assert.ok(
+    pyTypes.SearchHit,
+    'SearchHit (subclass of functional TypedDict _SearchHitRequired) should be parsed by parsePythonTypes',
+  );
+});
+
+test('parsePythonTypes classifies bare list as unknown and types ChatHistoryMessage.mentionedIds and MessageContact.labels as array<string>', () => {
+  const pySrc = readFileSync(join(gateRoot, 'sdk/python/openwa/types.py'), 'utf8');
+  const pyTypes = parsePythonTypes(pySrc);
+  assert.equal(pyTypes.ChatHistoryMessage.mentionedIds.token, 'array<string>');
+  assert.equal(pyTypes.MessageContact.labels.token, 'array<string>');
+
+  const bareListTypes = parsePythonTypes('class Sample(TypedDict):\n    items: list\n');
+  assert.equal(bareListTypes.Sample.items.token, 'unknown');
+  const diffs = comparePair(
+    'Sample',
+    bareListTypes.Sample,
+    'SampleDto',
+    { type: 'object', required: ['items'], properties: { items: { type: 'array', items: { type: 'string' } } } },
+    {},
+  );
+  assert.deepEqual(diffs, ['"items": hand unknown, contract array<string>']);
+});
+
+test('comparePair recursively gates inline nested object fields on TypeScript interfaces', () => {
+  const openapi = JSON.parse(readFileSync(join(gateRoot, 'openapi.json'), 'utf8'));
+  const allSchemas = openapi.components.schemas;
+  const dashSrc = readFileSync(join(gateRoot, 'dashboard/src/services/api.ts'), 'utf8');
+  const dashTypes = parseHandTypes(dashSrc);
+  const bulkDiffs = comparePair(
+    'BulkMessageItem',
+    dashTypes.BulkMessageItem,
+    'BulkMessageItemDto',
+    allSchemas.BulkMessageItemDto,
+    allSchemas,
+  );
+  const historyDiffs = comparePair(
+    'EngineHistoryMessage',
+    dashTypes.EngineHistoryMessage,
+    'ChatHistoryMessageDto',
+    allSchemas.ChatHistoryMessageDto,
+    allSchemas,
+  );
+  assert.match(dashTypes.BulkMessageItem.content.token, /\bmentions\?:/);
+  assert.doesNotMatch(dashTypes.EngineHistoryMessage.media.token, /\barchived\?:/);
+  assert.deepEqual(bulkDiffs, []);
+  assert.deepEqual(historyDiffs, []);
+
+  const driftedInline = parseHandTypes('export interface Item {\n  nested: { extra?: boolean; id: string };\n}\n');
+  const inlineDiffs = comparePair(
+    'Item',
+    driftedInline.Item,
+    'ItemDto',
+    {
+      type: 'object',
+      required: ['nested'],
+      properties: {
+        nested: {
+          type: 'object',
+          required: ['id'],
+          properties: { id: { type: 'string' } },
+        },
+      },
+    },
+    {},
+  );
+  assert.ok(inlineDiffs.some(d => d.includes('nested.hand has "extra"')));
 });

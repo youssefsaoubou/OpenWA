@@ -66,6 +66,33 @@ describe('SendBulkMessageDto recipient', () => {
   });
 });
 
+describe('SendBulkMessageDto personalized mentions', () => {
+  it.each(['{{phone}}', '{phone}', '{{ phone }}'])('accepts a mention supplied by %s', async placeholder => {
+    await accepts({
+      messages: [
+        {
+          chatId: '120363000000000000@g.us',
+          type: 'text',
+          content: { text: 'Hi @{{phone}}', mentions: [`${placeholder}@c.us`] },
+          variables: { phone: '62811' },
+        },
+      ],
+    });
+  });
+
+  it('still rejects a malformed literal mention', async () => {
+    await rejects({
+      messages: [
+        {
+          chatId: '120363000000000000@g.us',
+          type: 'text',
+          content: { text: 'Hi', mentions: ['not-a-person@c.us'] },
+        },
+      ],
+    });
+  });
+});
+
 // The url scheme is checked by the service after `variables` are applied, because a placeholder may
 // stand for the whole URL; the DTO only requires a string.
 describe('SendBulkMessageDto media url', () => {
@@ -98,6 +125,10 @@ describe('SendBulkMessageDto nested objects refuse an array', () => {
 
   it.each([[[]], [[{}]], [[options]]])('refuses options given as an array: %j', async value => {
     await rejects({ ...textItem('hi'), options: value });
+  });
+
+  it('refuses a message entry given as an array', async () => {
+    await rejects({ messages: [[{ chatId: 'c@c.us', type: 'text', content: { text: 'hi' } }]] });
   });
 
   it('refuses a message content given as an array', async () => {

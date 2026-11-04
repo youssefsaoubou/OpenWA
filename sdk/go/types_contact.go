@@ -33,7 +33,7 @@ type ProfilePictureResponse struct {
 }
 
 // ProfilePicturesResponse is a batch profile-picture lookup: a map of contact
-// id → picture URL (null when the lookup failed).
+// id → picture URL (null when the lookup failed). An id skipped after a lookup timed out is absent from the map; ask for it again.
 type ProfilePicturesResponse struct {
 	Pictures map[string]*string `json:"pictures"`
 }
@@ -42,6 +42,13 @@ type ProfilePicturesResponse struct {
 type ContactPhoneResponse struct {
 	ContactID string  `json:"contactId"`
 	Phone     *string `json:"phone"`
+}
+
+// ContactLidResponse carries the @lid WhatsApp holds for a phone number. Lid is nil when it holds none
+// (an unregistered number answers the same).
+type ContactLidResponse struct {
+	Number string  `json:"number"`
+	Lid    *string `json:"lid"`
 }
 
 // ListContactsQuery paginates the contact list.

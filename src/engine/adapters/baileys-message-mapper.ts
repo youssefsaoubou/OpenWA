@@ -245,6 +245,39 @@ export function extractBaileysBody(content: BaileysBodyContent): string {
 }
 
 /**
+ * The envelopes Baileys' `normalizeMessageContent` opens (Utils/messages.js), in its order: a disappearing
+ * chat's, a view-once item's, a captioned document's, an edit's and a few more. Read here for code that has
+ * no handle on the library, the chat preview recorded synchronously by the session store.
+ */
+const CONTENT_WRAPPERS = [
+  'ephemeralMessage',
+  'viewOnceMessage',
+  'documentWithCaptionMessage',
+  'viewOnceMessageV2',
+  'viewOnceMessageV2Extension',
+  'editedMessage',
+  'associatedChildMessage',
+  'groupStatusMessage',
+  'groupStatusMessageV2',
+] as const;
+
+/**
+ * The text a message is announced with ({@link extractBaileysBody}, else the label of a native-flow reply
+ * that carries it only in its params), read inside its envelopes as `normalizeMessageContent` would open
+ * them, at most five deep like the library. `''` when it carries none.
+ */
+export function baileysMessageText(message: unknown): string {
+  let content = message as Record<string, { message?: unknown } | null | undefined> | null | undefined;
+  for (let depth = 0; depth < 5 && content; depth++) {
+    const wrapper = CONTENT_WRAPPERS.find(name => content?.[name]);
+    if (!wrapper) break;
+    content = content[wrapper]?.message as typeof content;
+  }
+  if (!content) return '';
+  return extractBaileysBody(content) || extractBaileysButtonReply(content, 'interactiveResponseMessage')?.text || '';
+}
+
+/**
  * Write edited text into the slot a message carries its text in, which is where
  * {@link extractBaileysBody} reads it back: the text itself, or the caption of a photo, video or
  * document. Everything else the content holds (media keys, thumbnail, link preview) is kept, as
@@ -881,6 +914,14 @@ export interface BaileysContextContent {
   templateButtonReplyMessage?: BaileysContextCarrier | null;
   listResponseMessage?: BaileysContextCarrier | null;
   interactiveResponseMessage?: BaileysContextCarrier | null;
+  /** Content types that carry a `contextInfo` of their own and have no extractor beyond it. */
+  contactMessage?: BaileysContextCarrier | null;
+  contactsArrayMessage?: BaileysContextCarrier | null;
+  liveLocationMessage?: BaileysContextCarrier | null;
+  pollCreationMessage?: BaileysContextCarrier | null;
+  pollCreationMessageV2?: BaileysContextCarrier | null;
+  pollCreationMessageV3?: BaileysContextCarrier | null;
+  pollCreationMessageV5?: BaileysContextCarrier | null;
   /** A poll wrapper; the poll inside it carries the `contextInfo`. */
   pollCreationMessageV4?: { message?: object | null } | null;
 }
@@ -923,16 +964,16 @@ export function extractBaileysContext(content: BaileysContextContent): BaileysMe
   // A text status's styling rides on the extended-text content (proto backgroundArgb/font) —
   // surface it so the store/viewer can render the story the way it was posted.
   const extText = content.extendedTextMessage;
-  const contextInfo = subForContext?.contextInfo;
-  // WhatsApp stamps the timer on every message in a disappearing chat, a product, poll, contact card, live
-  // location, order or event included, so any content node answers when the carriers above have none.
-  // A V4 poll's node is one level down, inside its wrapper.
+  // A reply can be a poll, contact card, live location, order or event as well, and WhatsApp stamps the
+  // timer on every message in a disappearing chat, so any content node answers when the carriers above
+  // have none. A V4 poll's node is one level down, inside its wrapper.
+  const contexts = Object.values(content)
+    .concat(Object.values(content.pollCreationMessageV4?.message ?? {}))
+    .map(node => (node as BaileysContextCarrier | null | undefined)?.contextInfo);
+  const contextInfo = subForContext?.contextInfo ?? contexts.find(info => info != null);
   const expiration =
     contextInfo?.expiration ??
-    Object.values(content)
-      .concat(Object.values(content.pollCreationMessageV4?.message ?? {}))
-      .map(node => (node as BaileysContextCarrier | null | undefined)?.contextInfo?.expiration)
-      .find((e): e is number => typeof e === 'number' && e > 0);
+    contexts.map(info => info?.expiration).find((e): e is number => typeof e === 'number' && e > 0);
 
   const context: BaileysMessageContext = {
     ephemeralDuration: expiration ?? undefined,
@@ -942,11 +983,10 @@ export function extractBaileysContext(content: BaileysContextContent): BaileysMe
   };
 
   if (contextInfo?.quotedMessage && contextInfo.stanzaId) {
-    // The quote's body comes from the SAME extractor as the live message, so a quoted contact card,
-    // poll or interactive shape carries its text instead of an empty string — matching wwjs, whose
-    // quote is a full Message and therefore shows the same body it would show unquoted.
-    const qm = contextInfo.quotedMessage as BaileysBodyContent;
-    context.quotedMessage = { id: contextInfo.stanzaId, body: extractBaileysBody(qm) };
+    // The quote's body is the text the quoted message is announced with ({@link baileysMessageText}), so a
+    // quoted contact card, poll, interactive shape or native-flow reply carries its text instead of an empty
+    // string. That matches wwjs, whose quote is a full Message and shows the same body it would show unquoted.
+    context.quotedMessage = { id: contextInfo.stanzaId, body: baileysMessageText(contextInfo.quotedMessage) };
   }
 
   return context;

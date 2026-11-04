@@ -6,6 +6,8 @@
  * The binder is typed against the real DOM (`Document`/`HTMLElement`); tests pass minimal fakes.
  */
 
+import { isComposingKey } from './composition.ts';
+
 const FOCUSABLE =
   'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
@@ -49,9 +51,9 @@ export function bindModalA11y(
   modalStack.push(stackEntry);
 
   const onKeyDown = (event: KeyboardEvent) => {
-    if (event.key === 'Escape') {
-      // A nested dialog is open above this one — it owns Escape (see modalStack).
-      if (modalStack[modalStack.length - 1] !== stackEntry) return;
+    if (modalStack[modalStack.length - 1] !== stackEntry) return;
+    // An input method takes Escape to cancel the text it is composing; closing on it would drop the form.
+    if (event.key === 'Escape' && !isComposingKey(event)) {
       // Capture phase: nested widgets (selects, menus) may also listen for Escape — the dialog
       // owns dismissal while it is open.
       event.stopPropagation();
@@ -60,10 +62,18 @@ export function bindModalA11y(
     }
     if (event.key === 'Tab') {
       const focusables = visibleFocusables(card);
-      if (focusables.length === 0) return;
+      if (focusables.length === 0) {
+        event.preventDefault();
+        card.focus();
+        return;
+      }
       const first = focusables[0];
       const last = focusables[focusables.length - 1];
-      if (event.shiftKey && doc.activeElement === first) {
+      if (!card.contains(doc.activeElement)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && (doc.activeElement === first || doc.activeElement === card)) {
+        // The card is focusable itself (a click on dialog text lands there), and Shift+Tab from it would leave.
         event.preventDefault();
         last.focus();
       } else if (!event.shiftKey && doc.activeElement === last) {

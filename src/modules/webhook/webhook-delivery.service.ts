@@ -5,6 +5,7 @@ import { ConfigService } from '@nestjs/config';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { setTimeout } from 'node:timers/promises';
+import { randomUUID } from 'node:crypto';
 import { Webhook } from './entities/webhook.entity';
 import { WebhookOutboxService, type ReplayableDelivery } from './webhook-outbox.service';
 import { WebhookDeliveryFailure } from './entities/webhook-delivery-failure.entity';
@@ -221,14 +222,20 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    * pool. One flush of buffered receipts is thousands of dispatches in a tick: a quarter of the dispatch
    * concurrency runs at once, shared by the session's webhooks that name the event, up to three quarters of
    * WEBHOOK_DISPATCH_MAX_QUEUED events wait their turn (holding only the event), and the rest are dropped
-   * before they open an outbox row, a failure row or a hook call. A stage holds one webhook's deliveries, so
-   * a receiver that never answers holds only its own places, not those of its siblings. The pool never sees
-   * more than the running deliveries of each stage, so a flood, or a receiver that never answers, cannot
-   * shed or hold back what another session sends until several sessions have such receivers at once. An
-   * entry lives while its webhook has events in the stage; `dropped` counts those turned away since it
-   * was created.
+   * before they open an outbox row, a failure row or a hook call. A stage holds one webhook's deliveries and
+   * is sized once, when it is created, from the webhooks then naming the event. It keeps at least one place,
+   * so the session's webhooks together could take more than a quarter: the session gate in
+   * `optInSessionStages` caps what they run at once to that quarter however many webhooks name the event or
+   * change while earlier stages are active. The pool therefore never sees more than a quarter from one session,
+   * so a flood, or a receiver that never answers, cannot shed or hold back what another session sends until
+   * several sessions have such receivers at once. That cap is the guarantee. Isolation between the session's
+   * own webhooks holds only while their stages fit in the gate, one place each at least: with more webhooks
+   * naming the event than the gate has places, or one added while a larger stage is still live, a receiver
+   * that never answers can hold places its siblings would have used, up to the cap. An entry lives while its
+   * webhook has events in the stage; `dropped` counts those turned away since it was created.
    */
   private readonly optInStages = new Map<string, OptInStage>();
+  private readonly optInSessionStages = new Map<string, { gate: ConcurrencyLimiter; stages: number }>();
 
   constructor(
     @InjectRepository(Webhook, 'data')
@@ -258,15 +265,16 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
   }
 
   onModuleInit(): void {
-    // Warn on the default-derived misconfiguration that silently truncates in-flight deliveries at
-    // shutdown: WEBHOOK_SHUTDOWN_DRAIN_MS (default 5s) bounds how long onModuleDestroy waits for a
-    // delivery in flight, while WEBHOOK_TIMEOUT (default 10s) bounds the delivery itself. When the
-    // drain is shorter than the timeout, a delivery that takes nearly the full timeout is abandoned
-    // (logged, not dead-lettered — the receiver may already have it). The defaults already cross, so
-    // surface the cross so an operator who raised the timeout without raising the drain notices.
+    // WEBHOOK_SHUTDOWN_DRAIN_MS (default 5s) bounds how long onModuleDestroy waits for a delivery in
+    // flight, while WEBHOOK_TIMEOUT (default 10s) bounds the delivery itself. When the drain is shorter
+    // than the timeout, a delivery that takes nearly the full timeout is abandoned at shutdown (logged,
+    // not dead-lettered: the receiver may already have it). The defaults cross, the drain being sized to
+    // the shutdown budget, so only a changed value is warned about: an operator who raised the timeout
+    // without raising the drain notices, and a default install does not warn at every boot.
     const drainMs = this.configService.get<number>('webhook.shutdownDrainMs', DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS);
     const deliveryTimeoutMs = this.configService.get<number>('webhook.timeout', 10_000);
-    if (Number.isFinite(drainMs) && Number.isFinite(deliveryTimeoutMs) && drainMs < deliveryTimeoutMs) {
+    const atDefaults = drainMs === DEFAULT_WEBHOOK_SHUTDOWN_DRAIN_MS && deliveryTimeoutMs === 10_000;
+    if (!atDefaults && Number.isFinite(drainMs) && Number.isFinite(deliveryTimeoutMs) && drainMs < deliveryTimeoutMs) {
       this.logger.warn(
         `WEBHOOK_SHUTDOWN_DRAIN_MS (${drainMs}ms) is shorter than WEBHOOK_TIMEOUT (${deliveryTimeoutMs}ms) — ` +
           `an in-flight delivery that takes nearly the full timeout will be abandoned at shutdown. ` +
@@ -295,6 +303,7 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     // Opt-in events still waiting for their stage hold nothing durable (no outbox row yet) and are best effort,
     // so they are let go in both modes; the ones already running finish with the rest.
     for (const { stage } of this.optInStages.values()) stage.close();
+    for (const { gate } of this.optInSessionStages.values()) gate.close();
     if (!this.queueEnabled) {
       this.dispatchLimiter.close();
       for (const gate of this.degradedSessionGates.values()) gate.close();
@@ -345,6 +354,11 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
     named: number,
   ): Promise<void> {
     const key = JSON.stringify([sessionId, webhookId]);
+    let sessionStage = this.optInSessionStages.get(sessionId);
+    if (!sessionStage) {
+      sessionStage = { gate: new ConcurrencyLimiter(Math.floor(this.dispatchLimiter.maxCount / 4)), stages: 0 };
+      this.optInSessionStages.set(sessionId, sessionStage);
+    }
     let entry = this.optInStages.get(key);
     if (!entry) {
       // A quarter of the pool runs at once, divided among the webhooks that name the event (the limiter keeps at
@@ -359,9 +373,11 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
         webhookId,
       };
       this.optInStages.set(key, entry);
+      sessionStage.stages++;
     }
+    const sessionGate = sessionStage.gate;
     try {
-      await entry.stage.run(() => this.fanOut(sessionId, event, data, webhookId));
+      await entry.stage.run(() => sessionGate.run(() => this.fanOut(sessionId, event, data, webhookId)));
     } catch (error) {
       // Over the stage's bound, or still waiting when shutdown closed it; anything else is not ours to hide.
       if (isLimiterFull(error)) this.noteOptInDrop(event, entry);
@@ -391,6 +407,8 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
   private releaseOptInStage(key: string, entry: OptInStage): void {
     if (entry.stage.activeCount > 0 || entry.stage.queuedCount > 0 || this.optInStages.get(key) !== entry) return;
     this.optInStages.delete(key);
+    const sessionStage = this.optInSessionStages.get(entry.sessionId);
+    if (sessionStage && --sessionStage.stages === 0) this.optInSessionStages.delete(entry.sessionId);
     if (entry.dropped === 0) return;
     const { sessionId, webhookId } = entry;
     this.logger.warn(
@@ -421,11 +439,10 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
       data,
     );
 
-    // Base idempotency key for this event occurrence. occurredAt is captured once here and reused for
-    // every retry of this dispatch, so recurring lifecycle events get a distinct-per-occurrence key
-    // while retries of the same event stay stable. It is salted PER WEBHOOK below.
-    const occurredAt = new Date().toISOString();
-    const baseIdempotencyKey = generateIdempotencyKey(event, { ...data, sessionId }, occurredAt);
+    // Base idempotency key for this event occurrence. The occurrence id is minted once here and reused for
+    // every retry of this dispatch, so recurring lifecycle events get a distinct-per-occurrence key (even two
+    // within one clock millisecond) while retries of the same event stay stable. It is salted PER WEBHOOK below.
+    const baseIdempotencyKey = generateIdempotencyKey(event, { ...data, sessionId }, randomUUID());
 
     // Fan-out amplification bound: shed an over-cap inline media blob ONCE here, before the
     // per-webhook structuredClone below, so N matching webhooks (and the queued jobs retained in
@@ -1226,7 +1243,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
       lastError: unsent?.lastError
         ? `Webhook replay budget exhausted; last error: ${unsent.lastError}`
         : 'Webhook replay budget exhausted',
-      ...(this.keepsFailurePayload() ? { payload: row.payload } : {}),
+      ...(this.keepsFailurePayload()
+        ? { payload: row.payload, payloadRetentionHours: this.payloadRetentionHours() }
+        : {}),
     });
     if (recorded === true) incrementWebhookDeliveryFailures();
     return recorded !== null;
@@ -1237,7 +1256,11 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
    * built from, so an operator can redrive it. Off (0) by default, which stores nothing new.
    */
   private keepsFailurePayload(): boolean {
-    return this.configService.get<number>('webhook.failurePayloadRetentionHours', 0) > 0;
+    return this.payloadRetentionHours() > 0;
+  }
+
+  private payloadRetentionHours(): number {
+    return this.configService.get<number>('webhook.failurePayloadRetentionHours', 0);
   }
 
   /** What the direct path needs from the dispatch context: the slot, the replay copy, the attempt cap. */
@@ -1355,7 +1378,9 @@ export class WebhookDeliveryService implements OnModuleInit, OnModuleDestroy {
           deliveryId: payload.deliveryId,
           attempts: attempt,
           error,
-          ...(options.replayData ? { payload: options.replayData } : {}),
+          ...(options.replayData
+            ? { payload: options.replayData, payloadRetentionHours: this.payloadRetentionHours() }
+            : {}),
         });
         if (recorded !== false) incrementWebhookDeliveryFailures();
         if (recorded === null) throw new UnrecordedWebhookFailure(redactSsrfError(error));

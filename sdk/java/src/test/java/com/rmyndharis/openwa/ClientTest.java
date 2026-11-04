@@ -16,6 +16,7 @@ import com.rmyndharis.openwa.http.HttpMethod;
 import com.rmyndharis.openwa.model.AuthValidateResponse;
 import com.rmyndharis.openwa.model.SuccessResult;
 import com.rmyndharis.openwa.support.MockTransport;
+import java.net.URI;
 import java.nio.charset.StandardCharsets;
 import java.time.ZoneOffset;
 import java.time.ZonedDateTime;
@@ -44,6 +45,25 @@ class ClientTest {
         assertThrows(IllegalArgumentException.class,
             () -> client.requestVoid(HttpMethod.DELETE, "/api/sessions/s1/labels/%2e%2E", null, null));
         assertNull(tx.lastRequest());
+    }
+
+    @Test
+    void dotPartInsideAnIdIsRefusedBeforeSending() {
+        // Sent as one encoded segment ("..%2Fx"), such an id reaches another route behind a proxy that decodes
+        // %2F before it resolves dot segments (nginx with a URI on proxy_pass).
+        assertThrows(IllegalArgumentException.class, () -> client.templates.delete("S", "../../../sessions/V"));
+        assertThrows(IllegalArgumentException.class, () -> client.webhooks.delete("s1", "a/./b"));
+        assertThrows(IllegalArgumentException.class,
+            () -> client.requestVoid(HttpMethod.DELETE, "/api/sessions/s1/contacts/..%2Fwebhooks%2Fw1", null, null));
+        assertNull(tx.lastRequest());
+
+        // A slash inside an id with no dot part, as a caller-chosen batch or label id may hold, still goes out.
+        tx.respond(204, "");
+        client.webhooks.delete("s1", "a/b");
+        assertEquals("http://h:2785/api/sessions/s1/webhooks/a%2Fb", tx.lastRequest().url());
+        tx.respond(204, "");
+        client.webhooks.delete("s1", "v1.0/x");
+        assertEquals("http://h:2785/api/sessions/s1/webhooks/v1.0%2Fx", tx.lastRequest().url());
     }
 
     @Test
@@ -95,6 +115,9 @@ class ClientTest {
         tx.respondRaw(503, new byte[0], Map.of("Retry-After", List.of("soon")));
         assertNull(assertThrows(OpenWAApiError.class,
             () -> client.requestVoid(HttpMethod.GET, "/api/sessions", null, null)).retryAfterSeconds());
+        tx.respondRaw(503, new byte[0], Map.of("Retry-After", List.of("Sun, 6 Nov 1994 08:49:37 GMT")));
+        assertEquals(0L, assertThrows(OpenWAApiError.class,
+            () -> client.requestVoid(HttpMethod.GET, "/api/sessions", null, null)).retryAfterSeconds());
 
         tx.respond(502, "{\"statusCode\":502,\"message\":\"x\",\"code\":\"SESSION_LOGOUT_INCOMPLETE\"}");
         assertEquals("SESSION_LOGOUT_INCOMPLETE", assertThrows(OpenWAApiError.class,
@@ -117,6 +140,41 @@ class ClientTest {
         assertEquals("http://h:2785/api/x", tx.lastRequest().url());
         assertEquals("owa_k1_x", tx.lastRequest().headers().get("X-API-Key"));
         assertEquals("application/json", tx.lastRequest().headers().get("Content-Type"));
+    }
+
+    @Test
+    void rawRequestsKeepQueryBeforeFragment() {
+        OpenWAClient prefixed = new OpenWAClient(ClientConfig.builder()
+            .baseUrl("https://h:2785/gateway").apiKey("owa_k1_x").transport(tx).build());
+        String[][] cases = {
+            {"/api/sessions#part", "limit=50", "part"},
+            {"/api/sessions?offset=2#part", "offset=2&limit=50", "part"},
+            {"/api/sessions#part?x=2", "limit=50", "part?x=2"},
+            {"/api/sessions?offset=2", "offset=2&limit=50", null}
+        };
+        for (String[] row : cases) {
+            tx.respond(200, "{\"success\":true}");
+            SuccessResult result = prefixed.request(HttpMethod.GET, row[0], Map.of("limit", 50), null, SuccessResult.class);
+            assertTrue(result.success());
+            URI uri = URI.create(tx.lastRequest().url());
+            assertEquals("https", uri.getScheme(), row[0]);
+            assertEquals("h:2785", uri.getRawAuthority(), row[0]);
+            assertEquals("/gateway/api/sessions", uri.getRawPath(), row[0]);
+            assertEquals(row[1], uri.getRawQuery(), row[0]);
+            assertEquals(row[2], uri.getRawFragment(), row[0]);
+            assertEquals(HttpMethod.GET, tx.lastRequest().method());
+            assertEquals("owa_k1_x", tx.lastRequest().headers().get("X-API-Key"));
+        }
+    }
+
+    @Test
+    void fragmentCharactersInTypedIdsStayInThePath() {
+        tx.respond(200, "{\"id\":\"s#part\",\"name\":\"n\",\"status\":\"ready\"}");
+        assertEquals("s#part", client.sessions.get("s#part").id());
+        URI uri = URI.create(tx.lastRequest().url());
+        assertEquals("/api/sessions/s%23part", uri.getRawPath());
+        assertNull(uri.getRawQuery());
+        assertNull(uri.getRawFragment());
     }
 
     @Test
