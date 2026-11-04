@@ -23,6 +23,7 @@ import { EngineNotReadyError } from '../../common/errors/engine-not-ready.error'
 import { SendIdempotencyKey } from './entities/send-idempotency-key.entity';
 import { SendIdempotencyService } from './idempotency/send-idempotency.service';
 import { SendIdempotencyInterceptor } from './idempotency/send-idempotency.interceptor';
+import type { SendTextMessageDto } from './dto';
 
 /** Pacing is off by default in these tests; the governor's own spec covers its behaviour. */
 const inertPacing = (): SendPacingService =>

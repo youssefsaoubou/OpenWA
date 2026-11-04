@@ -194,10 +194,11 @@ describe('TemplateService', () => {
 
       await service.update('sess-1', 'tpl-uuid-1', { header: null, footer: null, mediaUrl: null });
 
-      expect(repository.save).toHaveBeenCalledWith(
-        expect.objectContaining({ header: null, footer: null, mediaUrl: null }),
-        { transaction: false },
+      expect(repository.update).toHaveBeenCalledWith(
+        { id: 'tpl-uuid-1', sessionId: 'sess-1' },
+        { header: null, footer: null, mediaUrl: null },
       );
+      expect(repository.save).not.toHaveBeenCalled();
     });
 
     it('should throw NotFoundException for an unknown template', async () => {
