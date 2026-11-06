@@ -954,7 +954,9 @@ src/database/migrations/           # data connection (pluggable)
 ├── 1791100000000-AddIntegrationDeliveryFailureDeliveryIndex.ts
 ├── 1791200000000-AddWebhookOutboxSessionIndex.ts
 ├── 1791300000000-BackfillLegacyMessageTypes.ts
-└── 1791400000000-AddLidMappingReportSource.ts
+├── 1791400000000-AddLidMappingReportSource.ts
+├── 1791600000000-RepairSqliteMessageFts.ts   # rebuilds the SQLite full-text index when it no longer matches messages
+└── 1791700000000-AddChatStateDeletedAt.ts   # chat_states.deletedAt (when WhatsApp deleted the chat)
 ```
 
 > [!NOTE]

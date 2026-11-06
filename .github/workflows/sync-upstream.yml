@@ -182,7 +182,10 @@ jobs:
           GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
           BEHIND: ${{ steps.merge.outputs.behind }}
         run: |
-          if gh pr view "$SYNC_BRANCH" --repo "$GITHUB_REPOSITORY" --json url --jq .url > /dev/null 2>&1; then
+          # A closed PR can keep the branch name from being reusable by this check. Only an open
+          # PR means the branch is already represented in the pull-request queue.
+          pr_state="$(gh pr view "$SYNC_BRANCH" --repo "$GITHUB_REPOSITORY" --json state --jq .state 2>/dev/null || true)"
+          if [ "$pr_state" = 'OPEN' ]; then
             echo "Sync PR is already open — the force-push above moved it onto the latest upstream."
             exit 0
           fi

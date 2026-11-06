@@ -69,11 +69,22 @@ export function retryAfterWhenBusy(res: Response): (error: unknown) => never {
  * cuts the connection, since the status line has gone out and a short body must not pass for the file.
  */
 export function storedFileAttachment(res: Response, source: ExportFileSource, mimetype: string): StreamableFile {
+  const destroySourceOnClose = (): void => {
+    if (!res.writableFinished && !source.stream.destroyed) source.stream.destroy();
+  };
+  // Express responses are EventEmitters, but lightweight controller tests may only provide `set`.
+  if (typeof res.once === 'function' && typeof res.off === 'function') {
+    res.once('close', destroySourceOnClose);
+    source.stream.once('close', () => res.off('close', destroySourceOnClose));
+  }
   res.set({ 'Content-Type': mimetype, 'X-Content-Type-Options': 'nosniff', 'Content-Disposition': 'attachment' });
   const file = new StreamableFile(source.stream, source.size === undefined ? {} : { length: source.size });
-  const cutConnection = file.errorHandler;
   return file.setErrorHandler((error, response) => {
-    if (response.destroyed || response.headersSent) return cutConnection(error, response);
+    if (response.destroyed) return;
+    if (response.headersSent) {
+      res.destroy();
+      return;
+    }
     storedFileLogger.error('Reading a stored file failed before any of it was sent', String(error));
     res.removeHeader('Content-Type');
     res.removeHeader('Content-Disposition');
